@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Cached YouTube downloads (~90MB, re-fetched on demand)
+.videocache/
+
+# MediaPipe landmarker binaries (~13MB, re-downloadable)
+models/
+
+# Secrets
+.env
+*.key
+
+# Stray session error logs
+/a
+/test
+
+# Machine-local Claude Code settings
+.claude/settings.local.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

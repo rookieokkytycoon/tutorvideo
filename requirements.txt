@@ -1,0 +1,8 @@
+flask>=3.0
+requests>=2.31
+networkx>=3.0
+gunicorn>=21.0
+# optional: openclaw.py falls back to the watch page's own caption track
+# when this is missing, so mining still works without it — but this path is
+# far more reliable and survives YouTube's page changes.
+youtube-transcript-api>=0.6

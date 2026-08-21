@@ -1,0 +1,3524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agentic Video Tutor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+<style>
+:root{
+  --wall:#ECEDE9; --paper:#FDFDF8; --ink:#141412; --marker:#2456D6;
+  --red:#C93A2E; --tray:#8A9086; --line:#D8DAD3;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--wall);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;min-height:100vh}
+.wrap{max-width:1140px;margin:0 auto;padding:24px 18px 60px}
+header{display:flex;align-items:baseline;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+h1{font-family:'Caveat',cursive;font-size:2.3rem;font-weight:600}
+h1 .u{border-bottom:4px solid var(--marker);padding-bottom:2px}
+header p{color:var(--tray);font-size:.88rem}
+.grid{display:grid;grid-template-columns:1fr 320px;gap:20px}
+@media(max-width:880px){.grid{grid-template-columns:1fr}}
+.board-frame{background:#B9BDB4;border-radius:14px;padding:12px;box-shadow:0 6px 24px rgba(20,20,18,.12)}
+.board{background:var(--paper);border-radius:8px 8px 0 0;position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:auto}
+.badge{position:absolute;top:10px;right:10px;font-size:.72rem;font-weight:600;letter-spacing:.06em;
+  text-transform:uppercase;padding:4px 10px;border-radius:99px;background:#F0F4FE;color:var(--marker);display:none}
+.badge.paused{display:block;background:#FBEDEB;color:var(--red)}
+.badge.live{display:block}
+.recdot{position:absolute;top:10px;left:10px;display:none;align-items:center;gap:6px;
+  font-size:.72rem;font-weight:600;color:var(--red)}
+.recdot.on{display:flex}
+.recdot i{width:10px;height:10px;border-radius:99px;background:var(--red);animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.25}}
+/* step pips: which beat of the explanation is on screen */
+.beats{position:absolute;left:12px;bottom:78px;display:flex;flex-direction:column;gap:6px}
+.beat{width:9px;height:9px;border-radius:99px;background:#D8DAD3;border:1.5px solid #C3C6BE;
+  transition:background .3s ease,transform .3s ease}
+.beat.on{background:var(--marker);border-color:var(--marker);transform:scale(1.35)}
+.beat.past{background:#A9B6DA;border-color:#A9B6DA}
+
+/* ===== CSS animation layer: chapter wipe over the board ===== */
+.fx{position:absolute;inset:0;pointer-events:none;opacity:0;
+  background:linear-gradient(100deg,transparent 0%,rgba(36,86,214,.10) 38%,
+    rgba(253,253,248,.88) 50%,rgba(36,86,214,.10) 62%,transparent 100%)}
+.fx.on{animation:wipe .72s cubic-bezier(.5,0,.3,1)}
+@keyframes wipe{0%{opacity:1;transform:translateX(-102%)}100%{opacity:1;transform:translateX(102%)}}
+
+/* ===== CSS-animated tutor: idle bob, blink, think ring, lipsync mouth ===== */
+.avatar{position:absolute;right:12px;bottom:10px;width:104px;pointer-events:none;
+  --mo:.10;--mw:.90;
+  animation:bob 4.6s ease-in-out infinite}
+.avatar.rec-hidden{display:none}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.avatar svg{display:block;width:100%;height:auto;overflow:visible}
+.avatar .head{fill:var(--paper);stroke:var(--ink);stroke-width:2.6;transition:stroke .25s ease}
+.avatar.qa .head{stroke:var(--red)}
+.avatar .eye{fill:var(--ink);transform-box:fill-box;transform-origin:center;
+  animation:blinkeye 4.2s infinite}
+@keyframes blinkeye{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.08)}}
+.avatar .mouth{fill:none;stroke:var(--ink);stroke-width:2.6;stroke-linecap:round;
+  transform-box:fill-box;transform-origin:center;
+  transform:scale(var(--mw),var(--mo));
+  transition:transform 70ms linear}
+.avatar.qa .mouth{stroke:var(--red)}
+.avatar .ring{fill:none;stroke:var(--marker);stroke-width:2;stroke-dasharray:6 9;opacity:0}
+.avatar.think .ring{opacity:.85;transform-box:fill-box;transform-origin:center;
+  animation:spin 3.1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.avatar.think .head{animation:pulse 1.25s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.avatar .tag{display:block;text-align:center;font-family:'Caveat',cursive;
+  font-size:1rem;color:var(--tray);margin-top:-4px}
+
+/* player chrome */
+.chrome{background:#1E1F1D;border-radius:0 0 8px 8px;padding:10px 12px 12px}
+.timeline{display:flex;gap:3px;height:12px;cursor:pointer;margin-bottom:8px}
+.seg{position:relative;flex:1;background:#4A4C48;border-radius:3px;overflow:hidden;min-width:14px}
+.seg .fill{position:absolute;inset:0;width:0;background:var(--marker)}
+.seg.qa .fill{background:var(--red)}
+.seg.photo .fill{background:#7A5AD6}
+.seg.hybrid .fill{background:#1F9E7A}
+.seg.skeleton .fill{background:#E08A2E}
+.seg.hand .fill{background:#1F9E7A}
+.seg.lineform .fill{background:#0F8B9E}
+.seg.compose .fill{background:linear-gradient(90deg,#E08A2E,#1F9E7A,#0F8B9E)}
+.seg:hover{outline:1.5px solid #fff}
+.controls{display:flex;align-items:center;gap:10px;color:#D8DAD3;font-size:.8rem}
+.controls button{background:transparent;border:1.5px solid #4A4C48;color:#EDEEE9;border-radius:6px;
+  padding:5px 12px;font:inherit;font-weight:600;cursor:pointer}
+.controls button:hover{border-color:#EDEEE9}
+.controls button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.controls .spacer{flex:1}
+.controls .rec{border-color:var(--red);color:#F5B8B1}
+.interrupt{display:flex;gap:8px;margin-top:12px}
+.interrupt input{flex:1;border:1.5px solid var(--line);border-radius:8px;padding:11px 14px;
+  font:inherit;font-size:.95rem;background:#fff;color:var(--ink)}
+.interrupt input:focus{outline:2px solid var(--red);outline-offset:1px;border-color:var(--red)}
+button.big{font:inherit;font-weight:600;font-size:.92rem;border:none;border-radius:8px;
+  padding:10px 16px;cursor:pointer}
+button.big:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.danger{background:var(--red);color:#fff}
+.primary{background:var(--marker);color:#fff;flex:1}
+.ghost{background:transparent;color:var(--ink);border:1.5px solid var(--line)}
+.ghost[aria-pressed="true"]{border-color:var(--marker);color:var(--marker)}
+/* live coaching: green while the camera is on, so it is never ambiguous
+   from across the room whether this page is watching you */
+.coachbtn{background:transparent;color:#1F9E7A;border:1.5px solid #1F9E7A;flex:1}
+.coachbtn.on{background:#1F9E7A;color:#fff}
+.badge.coach{display:block;background:#E6F5F0;color:#1F9E7A}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:18px;
+  display:flex;flex-direction:column;gap:13px;align-self:start}
+label{font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tray)}
+textarea{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:10px 12px;
+  font:inherit;font-size:.95rem;resize:vertical;min-height:56px;background:#fff;color:var(--ink)}
+textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:var(--marker)}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.status{font-size:.85rem;color:var(--tray);min-height:1.2em}
+.status.err{color:var(--red)}
+.status.busy::after{content:"";display:inline-block;width:5px;height:5px;border-radius:99px;
+  margin-left:7px;vertical-align:middle;background:var(--marker);animation:dots 1.1s infinite}
+@keyframes dots{0%,100%{opacity:.25;transform:translateX(0)}50%{opacity:1;transform:translateX(4px)}}
+.scenes{display:flex;flex-direction:column;gap:6px;max-height:170px;overflow-y:auto}
+.scene{display:flex;gap:10px;align-items:baseline;padding:7px 10px;border-radius:8px;
+  border:1px solid var(--line);font-size:.85rem;background:#fff;cursor:pointer;
+  transition:border-color .18s ease,background .18s ease,transform .18s ease}
+.scene:hover{border-color:var(--marker);transform:translateX(2px)}
+.scene.active{border-color:var(--marker);background:#F0F4FE}
+.scene.done{opacity:.55}
+.scene.qa{border-style:dashed;border-color:var(--red)}
+.scene.fresh{animation:popin .45s cubic-bezier(.2,1.5,.4,1)}
+@keyframes popin{0%{transform:scale(.9);opacity:0}100%{transform:scale(1);opacity:1}}
+.scene .n{font-family:'Caveat',cursive;font-size:1.1rem;color:var(--marker);min-width:1.2em}
+.scene .kind{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:.62rem;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--tray)}
+.chat{display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto;
+  border-top:1px dashed var(--line);padding-top:10px}
+.msg{font-size:.83rem;line-height:1.5;padding:7px 10px;border-radius:8px;max-width:95%;
+  animation:slidein .3s ease}
+@keyframes slidein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.msg.tutor{background:#F0F4FE;align-self:flex-start}
+.msg.you{background:#FBEDEB;align-self:flex-end}
+.msg.sys{color:var(--tray);font-family:'IBM Plex Mono',monospace;font-size:.72rem;background:none;padding:2px 0}
+
+@media(prefers-reduced-motion:reduce){
+  .recdot i,.avatar,.avatar .eye,.avatar.think .ring,.avatar.think .head,
+  .fx.on,.scene.fresh,.msg,.status.busy::after{animation:none}
+  .avatar .mouth,.beat{transition:none}
+  .scene:hover{transform:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Agentic <span class="u">video</span> tutor</h1>
+  <p>Step-by-step animated explanations you can talk to — it pauses, annotates, even adds new scenes</p>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="board-frame">
+      <div class="board">
+        <canvas id="cv" width="800" height="600"></canvas>
+        <div class="fx" id="fx"></div>
+        <div class="beats" id="beats"></div>
+        <div class="avatar" id="avatar" aria-hidden="true">
+          <svg viewBox="0 0 100 108">
+            <circle class="ring" cx="50" cy="50" r="47"></circle>
+            <circle class="head" cx="50" cy="50" r="42"></circle>
+            <circle class="eye" cx="37" cy="40" r="3.2"></circle>
+            <circle class="eye" cx="63" cy="40" r="3.2"></circle>
+            <ellipse class="mouth" cx="50" cy="67" rx="12" ry="9"></ellipse>
+          </svg>
+          <span class="tag">tutor</span>
+        </div>
+        <div class="badge" id="badge">Live</div>
+        <div class="recdot" id="recdot"><i></i>REC</div>
+      </div>
+      <div class="chrome">
+        <div class="timeline" id="timeline" aria-label="Chapters"></div>
+        <div class="controls">
+          <button id="pauseBtn" disabled>Pause</button>
+          <span id="timeMeta">0:00</span>
+          <span class="spacer"></span>
+          <span id="sceneMeta"></span>
+          <button class="rec" id="rec" title="Record the board to a video file for YouTube">Record</button>
+        </div>
+      </div>
+      <div class="interrupt">
+        <input id="q" placeholder="Interrupt with a question — or ask for something new…" aria-label="Ask a question">
+        <button class="big danger" id="ask">Ask</button>
+        <button class="big ghost" id="mic" style="display:none">Mic</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div>
+      <label for="topic">Tutorial topic</label>
+      <textarea id="topic">How photosynthesis works</textarea>
+    </div>
+    <div class="row">
+      <button class="big primary" id="go">Start lesson</button>
+      <button class="big ghost" id="demo">Demo</button>
+      <button class="big ghost" id="voice" aria-pressed="true">Voice on</button>
+      <button class="big ghost" id="lang" aria-pressed="false" title="Bahasa pelajaran / lesson language">EN</button>
+    </div>
+    <div class="row">
+      <button class="big ghost" id="howdraw">How I animate</button>
+      <button class="big ghost" id="howlearn">How I learn</button>
+    </div>
+    <div class="row">
+      <button class="big ghost" id="fixit">Fix something (hands)</button>
+      <button class="big ghost" id="howmove">Show me a motion</button>
+      <button class="big ghost" id="howcurve">Actuated curve</button>
+      <button class="big ghost" id="howboth">Body + hands together</button>
+      <button class="big ghost" id="howworld">One 3D room</button>
+      <button class="big ghost" id="vectors" aria-pressed="true">Vectors on</button>
+    </div>
+    <label>Live coaching — your camera, scored against the rig</label>
+    <div class="row">
+      <button class="big coachbtn" id="coach"
+              title="Turn on your camera. The rig performs the movement, MediaPipe tracks you, and the two are compared joint by joint — in your browser, nothing is uploaded.">Coach me</button>
+      <button class="big ghost" id="mirrorBtn" aria-pressed="true"
+              title="You are facing the demonstration, so copying it with the opposite arm is the natural thing to do. Mirror accepts that; turn it off to be graded on the same side the rig uses.">Mirror: on</button>
+    </div>
+    <label for="tube">Mine a how-to — YouTube URL, wikiHow URL, or a topic</label>
+    <div class="row">
+      <input id="tube" type="text" placeholder="youtube URL, wikihow URL, or &quot;how to fix a bike chain&quot;"
+             style="flex:1;min-width:0;padding:9px 11px;border:1px solid #DCDCD2;
+                    border-radius:8px;font:inherit;font-size:13px;background:#FDFDF8">
+      <button class="big ghost" id="mine">Mine it</button>
+      <button class="big ghost" id="track" aria-pressed="false"
+              title="Track the real person in the video with BlazePose and MediaPipe Hands, instead of synthesising the motion from the transcript">Track: off</button>
+    </div>
+    <div class="status" id="status"></div>
+    <label>Chapters (click to jump)</label>
+    <div class="scenes" id="scenes"></div>
+    <label>Conversation</label>
+    <div class="chat" id="chat" aria-live="polite"></div>
+  </div>
+</div>
+</div>
+
+<script>
+const GRID=50, cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const $=id=>document.getElementById(id);
+/* The render loop owns the canvas and runs 60 times a second, so a thrown
+   error there would otherwise stop the board with no explanation. Surface it
+   in the status line instead of the console nobody has open. */
+window.onerror=(msg,src,line)=>{
+  const s=$('status'); if(!s)return;
+  s.textContent=`script error: ${msg} (line ${line})`; s.className='status err';
+};
+let voiceOn=true, scenes=[], topicNow="", qaHistory=[];
+let videoEnabled=false, imageEnabled=false, recorder=null;
+let trackEnabled=false, trackWhy="";
+fetch("/health").then(r=>r.json()).then(d=>{
+  videoEnabled=!!d.video; imageEnabled=!!d.image;
+  trackEnabled=!!d.track; trackWhy=d.track_why||"";
+  const bits=[];
+  if(videoEnabled)bits.push("video "+(d.video_model||""));
+  if(imageEnabled)bits.push("stills "+(d.image_model||""));
+  if(trackEnabled)bits.push("pose tracking ready");
+  if(bits.length)$('sceneMeta').textContent="Diffusion ready — "+bits.join(" · ");
+  const b=$('track');
+  if(b&&!trackEnabled){b.disabled=true;b.textContent="Track: n/a";
+    b.title="Real tracking needs mediapipe, opencv-python and yt-dlp on the server"
+            +(trackWhy?" — "+trackWhy:"");}
+}).catch(()=>{});
+let captionText="", captionQA=false, speaking=false;
+
+const MEDIA=u=>"/api/media?u="+encodeURIComponent(u);
+const reducedMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ============ coordinate mapping (grid y is bottom-up) ============ */
+const PAD=42, CAP_H=64;
+/* Every board->pixel mapping funnels through sx/sy/sscale, so putting one
+   affine viewport in front of them lets ANY draw function render into a
+   sub-rectangle of the canvas without knowing it is being composited.
+   VP.on=false is the whole board, which is every non-composite scene. */
+const VP={on:false,x:0,y:0,k:1};
+const _sx=x=>PAD+(x/(GRID+1))*(cv.width-2*PAD);
+const _sy=y=>cv.height-PAD-CAP_H-(y/(GRID+1))*(cv.height-2*PAD-CAP_H);
+const sx=x=>VP.on?VP.x+_sx(x)*VP.k:_sx(x);
+const sy=y=>VP.on?VP.y+_sy(y)*VP.k:_sy(y);
+const sscale=()=>((cv.width-2*PAD)/(GRID+1))*(VP.on?VP.k:1);   /* grid -> px */
+/* Run fn with the board squeezed into normalised rect [x,y,w,h]. The scale is
+   uniform so nothing is stretched, and the rect is clipped so one pane can
+   never scribble into its neighbour. */
+function vpFor(r){
+  const rx=r[0]*cv.width, ry=r[1]*cv.height,
+        rw=r[2]*cv.width, rh=r[3]*cv.height;
+  const k=Math.min(rw/cv.width,rh/cv.height);
+  return {x:rx+(rw-cv.width*k)/2, y:ry+(rh-cv.height*k)/2, k:k};
+}
+function withViewport(r,fn){
+  const prev={on:VP.on,x:VP.x,y:VP.y,k:VP.k}, v=vpFor(r);
+  VP.on=true; VP.x=v.x; VP.y=v.y; VP.k=v.k;
+  ctx.save(); ctx.beginPath();
+  ctx.rect(r[0]*cv.width,r[1]*cv.height,r[2]*cv.width,r[3]*cv.height); ctx.clip();
+  try{fn();}finally{ctx.restore(); VP.on=prev.on;VP.x=prev.x;VP.y=prev.y;VP.k=prev.k;}
+}
+/* inverse of _sx/_sy: pixels back to board grid, so a pane's landmark can be
+   handed to the annotator in the coordinates its strokes actually use */
+const ux=px=>(px-PAD)*(GRID+1)/(cv.width-2*PAD);
+const uy=py=>(cv.height-PAD-CAP_H-py)*(GRID+1)/(cv.height-2*PAD-CAP_H);
+const paneToBoard=(v,g)=>[ux(v.x+_sx(g[0])*v.k),uy(v.y+_sy(g[1])*v.k)];
+
+/* ============ prompts ============ */
+const STROKE_LANG=`Strokes use a ${GRID}x${GRID} grid: cells are x<COL>y<ROW>, x1y1 bottom-left, x${GRID}y${GRID} top-right. A stroke lists grid points plus t values in [0,1] (when the pen reaches each point). Repeat a point twice with adjacent t values for a sharp corner.
+Examples:
+Curve: <points>'x8y6','x6y7','x6y10','x8y11'</points><t_values>0.00,0.30,0.80,1.00</t_values>
+Line: <points>'x18y31','x35y14'</points><t_values>0.00,1.00</t_values>
+Rectangle: <points>'x13y27','x24y27','x24y27','x24y11','x24y11','x13y11','x13y11','x13y27'</points><t_values>0.00,0.30,0.25,0.50,0.50,0.75,0.75,1.00</t_values>`;
+
+/* The board is an ANIMATED explainer, not a hand-drawing. The director writes
+   the animation itself: elements that appear, move and pulse, grouped into
+   beats that are revealed one at a time. */
+const ANIM_LANG=`An animated scene is a list of "steps" (beats). Each beat reveals some elements and is on screen for an equal share of the chapter.
+Coordinates are a ${GRID}x${GRID} grid: x1y1 is bottom-left, x${GRID}y${GRID} is top-right. Keep everything between 4 and 46 on both axes so nothing is clipped.
+Element shapes:
+  {"type":"box","x":cx,"y":cy,"w":W,"h":H,"label":"name"}
+  {"type":"circle","x":cx,"y":cy,"r":R,"label":"name"}
+  {"type":"dot","x":cx,"y":cy,"label":"name"}
+  {"type":"arrow","from":[x,y],"to":[x,y],"label":"name"}
+  {"type":"line","from":[x,y],"to":[x,y],"label":"name"}
+  {"type":"text","x":cx,"y":cy,"text":"a few words"}
+Every element also takes:
+  "color": "ink" | "blue" | "red" | "green" | "purple"    (default ink)
+  "in":    "pop" | "fade" | "slide" | "grow"              (how it enters)
+  "motion":"none" | "pulse" | "bob" | "flow" | "orbit"    (what it keeps doing)
+"flow" only means anything on an arrow or line — it animates dashes travelling along it, which is how you show something moving through a path. "orbit" circles a dot around its own position. Use motion deliberately: the thing the beat is ABOUT should be the thing that moves.
+Build up a picture across beats — later beats add to what earlier beats put on screen, they do not replace it. 2-4 beats per chapter, 2-5 elements per beat. Label the parts, because the tutor points at them by name later.`;
+
+const DIRECTOR_SYS=`You are the director of short animated tutorial videos. Given a topic, plan 3-4 chapters. Respond with ONLY a JSON array, no markdown fences.
+Output STRICT JSON: every key and string double-quoted, no comments, no trailing commas, and never write "..." or an ellipsis as a placeholder — write the real content or leave the key out.
+Shape of one chapter:
+[{"narration":"1-2 conversational sentences, spoken aloud","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"what this beat shows","els":[{"type":"box","x":20,"y":30,"w":12,"h":8,"label":"pump","color":"blue","in":"pop"},{"type":"arrow","from":[27,30],"to":[36,30],"label":"flow","color":"red","in":"grow","motion":"flow"}]}]}]
+${ANIM_LANG}
+Four other modes exist for when a diagram is the wrong tool:
+- "hand": a close-up 3D hand — 21 tracked landmarks, five finger chains — demonstrating the actual hand movements of a repair, with the gesture named and the finger curl read out live. Set "hand_steps" to 2-5 SHORT imperative actions that START WITH THE VERB ("Pinch the tab and peel it back", "Grip the cap and twist counter-clockwise", "Press the tab until it clicks"), and omit "steps". THIS IS THE BEST MODE FOR SHOWING SOMEONE HOW TO FIX SOMETHING — hands are what actually do a repair, and the student can ask about the grip and get an answer about the grip.
+- "skeleton": the whole body performing the task, with gesture tracking and motion vectors. Set "motion_steps" the same way. Use it when the WHOLE BODY matters (posture, reach, a two-handed lift); use "hand" when the fingers matter, which for most repairs they do.
+- "lineform": an actuated curve interface — a chain of servo motors that bends itself into shapes. Set "shapes" to 2-4 of: curve, helix, surface, solid, phone, wristband, lamp, ruler, slider, data. Use it to show how one physical line can display a curve, a surface, a solid or an icon.
+- "compose": TWO OR THREE of the above side by side on one timeline — the board splits into panes that all play together. Set "parts" to 2-3 of {"kind":"hand","steps":[...]}, {"kind":"skeleton","steps":[...]}, {"kind":"lineform","shapes":[...]}, each with an optional short "title". This is the RIGHT MODE whenever a step has both a whole-body component and a fingers component — "brace the wheel with your body while your fingers seat the chain" — because the student can watch the posture and the grip at the same time instead of choosing. Example: {"mode":"compose","seconds":12,"parts":[{"kind":"skeleton","steps":["Brace the wheel against your knee"],"title":"posture"},{"kind":"hand","steps":["Pinch the chain onto the teeth"],"title":"grip"}]}
+- "world": ONE 3D room instead of panes — the strongest mode when WHERE things are is part of the lesson. Set "actors" to 1-3 of {"kind":"skeleton","steps":[...]}, {"kind":"hand","steps":[...]}, {"kind":"lineform","shapes":[...]}, each optionally with "title". They stand in one space at real scale, so they occlude each other; a hand and a body are automatically the SAME person's hand. Add "wrap":true to a lineform actor and the servo chain bandages itself around the moving forearm — that is the paper's constraint, and it cannot be shown in a pane. Add "video_prompt" and the diffusion footage plays on a screen hanging in the room instead of behind everything. Better still, set "step_videos":true and EVERY step gets its own generated clip, cut onto that screen exactly when the rig performs it — real footage of the pinch playing behind the servo chain doing the pinch. Only do that when seeing the real thing matters, because it is one paid generation per step (max 4); you may instead write the prompts yourself as "step_videos":["one dense cinematic sentence for step 1", "...step 2"]. The camera moves on its own shot list, cutting close for finger work and wide for whole-body work, and the student can drag it. Example: {"mode":"world","seconds":15,"actors":[{"kind":"skeleton","title":"posture","steps":["Brace the wheel against your knee"]},{"kind":"hand","title":"grip","steps":["Pinch the chain onto the teeth"]},{"kind":"lineform","title":"target shape","shapes":["curve","wristband"],"wrap":true}]}
+- "photo": a diffusion-generated still photograph as the backdrop. Set "image_prompt" to a dense photographic description (subject, setting, lighting, no text in frame) and omit "steps". Use it for a real object, place or specimen the student should SEE.
+- "hybrid": diffusion-generated film footage as the backdrop. Set "video_prompt" to 1-2 dense cinematic sentences naming the subject, its MOTION and the camera move, one continuous shot. Use it only when the motion is the point.
+Prefer "anim" — it is instant and free. "skeleton", "compose" and "world" are also instant and free (a world chapter only costs money if you give it a "video_prompt"), so reach for them freely whenever a human action is being taught; use "world" for at least one chapter when the lesson involves a body, a tool and a part that have to be in the right places relative to each other. Use photo/hybrid for at most one chapter.`;
+
+const SKETCH_SYS=`You are an expert annotator. You do NOT draw the subject — it is already on screen. You add a few marker strokes ON TOP of it: circles around a part, arrows pointing at it, underlines. ${STROKE_LANG}
+Scale matters — a mark smaller than 4 grid units is invisible, so:
+- A circle around a part is a closed loop of 6-8 points with a radius of 6 to 10 units around the part's location. Never a tiny scribble on top of it.
+- An arrow is a straight line at least 10 units long ENDING at the part, starting from empty space to one side. Add a 2-stroke chevron at the tip if you want a head.
+- An underline sits 4-6 units BELOW the part and runs 8-14 units wide.
+Never draw through a label — circle around it or point at it from outside, so the text stays readable.
+Plan in <thinking> tags in UNDER 40 words, then answer ONLY:
+<strokes><s1><points>...</points><t_values>...</t_values><id>what you are pointing at</id></s1>...</strokes>
+2-3 strokes, no more. Stay inside the grid. Do not use markdown fences.`;
+
+const QA_SYS=`You are a friendly live tutor narrating an animated lesson. A student just INTERRUPTED with a question. You can see what is on the board (parts and grid locations are in the user message). ${STROKE_LANG}
+Respond in exactly this format:
+<answer>1-3 short spoken sentences, conversational, directly answering</answer>
+Then OPTIONALLY exactly one of:
+<strokes>1-3 annotation strokes placed ON the existing animation — a circle around a part, an arrow at it, an underline, at the parts' grid locations. Same stroke format with <id> labels.</strokes>
+<new_scene>{"narration":"1-2 spoken sentences","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[ ... ]}]}</new_scene>
+Use <new_scene> when the question deserves its OWN animation (a different mechanism, a "show me X" request); it becomes the next chapter.
+A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements. Use that whenever the student asks how to physically DO something: "show me", "how do I hold it", "what grip", "show me your hands". Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action. Both are instant and free, so prefer them over a diagram any time the answer is a movement rather than a fact.
+When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in one 3D room at real scale instead of side by side, which is the better answer when the question is about where things are relative to each other.
+If the board is already a 3D room, you may ALSO answer by moving the camera:
+<camera>{"target":"grip index tip","dist":0.8,"seconds":1.4,"label":"close on the grip"}</camera>
+"target" is one of the anchor names listed on the board above (or [x,y,z]); "shot" may instead name one of the director's own shots (wide, medium, close, side, screen, curve); "dist" is metres from the target; "yaw" and "pitch" are radians. Use it whenever the question is really about a vantage point — "show me from the side", "get closer", "what is behind it", "can I see the screen" — because in a room that question has a real answer. A camera move can accompany <answer> and <strokes>; annotations stay stuck to what they were pointing at while the camera moves.
+${ANIM_LANG}
+Use <strokes> to point at what is already on screen. Omit both if words alone answer it. Never leave the grid.`;
+
+/* ============ lesson language ============
+   Only the SPOKEN and DISPLAYED text changes. Keys, mode names and enum
+   values stay English or the parser stops recognising its own scenes, and
+   the diffusion prompts stay English because the image and video models
+   were trained that way. */
+let lessonLang="en";
+const LANG_RULE={
+  en:"",
+  id:`
+
+BAHASA: Tulis SEMUA teks yang diucapkan atau tampil di layar dalam Bahasa Indonesia yang wajar dan santai — "narration", "title", "beat", setiap "label" dan "text" pada elemen, setiap kalimat di <answer>, dan setiap <id> pada stroke.
+JANGAN diterjemahkan: kunci JSON, nama mode ("anim","world","hand","skeleton","lineform","compose","photo","hybrid"), nilai "color"/"in"/"motion", nama tag XML, dan isi "image_prompt"/"video_prompt" — semuanya tetap bahasa Inggris persis seperti aslinya, karena model gambar dan videonya berbahasa Inggris.
+Langkah gerakan ("steps","hand_steps","motion_steps") juga tetap bahasa Inggris: pengurai gerak mencocokkan kata kerja bahasa Inggris untuk memilih gestur. Narasinya yang berbahasa Indonesia, bukan langkahnya.`
+};
+const langRule=()=>LANG_RULE[lessonLang]||"";
+const speechLang=()=>lessonLang==="id"?"id-ID":"en-US";
+
+/* Voice choice is not cosmetic. With no id-ID voice on the machine the
+   browser happily narrates an Indonesian lesson with an American voice,
+   mispronouncing every word — and says nothing about it. So: rank what is
+   actually on offer, and announce which one won, because a missing voice
+   should be visible rather than merely audible. */
+const allVoices=()=>('speechSynthesis'in window)
+  ?(speechSynthesis.getVoices()||[]):[];
+function scoreVoice(v,locale){
+  const lang=(v.lang||"").toLowerCase().replace("_","-");
+  const want=locale.toLowerCase();
+  let s;
+  if(lang===want)s=100;                                   /* id-ID exactly */
+  else if(lang.split("-")[0]===want.split("-")[0])s=70;   /* any id-* */
+  else return -1;                                /* wrong language: unusable */
+  const n=(v.name||"").toLowerCase();
+  if(n.includes("natural"))s+=30;      /* Edge's cloud voices, far better */
+  if(n.includes("online"))s+=10;
+  if(n.includes("desktop"))s-=15;      /* legacy SAPI, robotic */
+  if(v.localService)s+=5;              /* still works with no network */
+  return s;
+}
+function pickVoice(locale){
+  let best=null,bs=-1;
+  for(const v of allVoices()){
+    const s=scoreVoice(v,locale);
+    if(s>bs){bs=s;best=v;}
+  }
+  return bs>=0?best:null;
+}
+/* getVoices() is empty until the browser has loaded them, and not every
+   browser fires voiceschanged, hence the timeout. */
+function withVoices(cb){
+  if(!('speechSynthesis'in window)||allVoices().length)return cb();
+  let done=false;
+  const fire=()=>{if(!done){done=true;cb();}};
+  speechSynthesis.addEventListener('voiceschanged',fire,{once:true});
+  setTimeout(fire,1200);
+}
+let voiceNoted="";
+function voiceNote(force){
+  const loc=speechLang();
+  if(!force&&voiceNoted===loc)return;          /* say it once per language */
+  voiceNoted=loc;
+  if(!('speechSynthesis'in window))
+    return chatMsg('sys','&#9888; this browser has no speech synthesis');
+  const v=pickVoice(loc);
+  if(v)return chatMsg('sys','&#9834; voice: '+v.name+' ('+v.lang+')');
+  const others=allVoices().length;
+  chatMsg('sys',lessonLang==="id"
+    ?'&#9888; tidak ada suara Indonesia di perangkat ini'
+      +(others?' (dari '+others+' suara terpasang)':'')
+      +' — narasi akan dibacakan suara Inggris. Buka halaman ini di Microsoft '
+      +'Edge untuk suara Ardi/Gadis dari cloud, atau pasang paket Speech '
+      +'Bahasa Indonesia lewat Windows Settings &gt; Time &amp; language.'
+    :'&#9888; no '+loc+' voice installed — falling back to the browser default');
+}
+
+/* Same-origin Python backend proxy — see server.py. No CORS, key stays on the server. */
+async function askClaude(system,user,history=[],max=2500){
+  const r=await fetch("/api/claude",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:max,system,
+      messages:[...history,{role:"user",content:user}]})});
+  const d=await r.json();
+  if(!d.content) throw new Error(d.error?.message||"API call failed");
+  return d.content.map(b=>b.type==="text"?b.text:"").join("");
+}
+
+/* ============ tolerant JSON for model output ============
+   The director returns a JSON array. Models occasionally emit JSON-ish
+   instead: a trailing comma, a bare key, a smart quote from a narration
+   sentence. One bad character used to lose the whole lesson, so parse
+   strictly first, then repair, and if it still fails report the offending
+   text rather than a bare position number nobody can act on. */
+function jsonSlice(txt){
+  txt=txt.replace(/```[a-z]*\n?|```/g,"").trim();
+  const a=txt.indexOf('['), b=txt.lastIndexOf(']');
+  if(a>=0&&b>a)return txt.slice(a,b+1);
+  const c=txt.indexOf('{'), d=txt.lastIndexOf('}');
+  if(c>=0&&d>c)return '['+txt.slice(c,d+1)+']';
+  return txt;
+}
+/* Split into string / non-string runs so repairs never touch prose. A
+   narration like "Step 1: tighten it, then check" contains both a colon and
+   a comma; rewriting those would corrupt the text it is trying to save. */
+function jsonSegments(t){
+  const segs=[]; let buf='', inStr=false, esc=false;
+  for(const ch of t){
+    if(inStr){
+      buf+=ch;
+      if(esc)esc=false; else if(ch==='\\')esc=true;
+      else if(ch==='"'){segs.push({s:true,t:buf});buf='';inStr=false;}
+    }else if(ch==='"'){
+      if(buf)segs.push({s:false,t:buf});
+      buf='"'; inStr=true;
+    }else buf+=ch;
+  }
+  if(buf)segs.push({s:inStr,t:buf});
+  return segs;
+}
+function repairJSON(t){
+  return jsonSegments(t).map(seg=>seg.s?seg.t:seg.t
+      .replace(/,(\s*[}\]])/g,'$1')                       /* trailing comma */
+      .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g,'$1"$2"$3')  /* bare key */
+      .replace(/\[\s*\.\.\.\s*\]/g,'[]')                  /* copied ellipsis */
+      .replace(/(\}|\])\s*(?=\{)/g,'$1,')                 /* missing comma */
+    ).join('')
+     .replace(/[“”]/g,'"').replace(/[‘’]/g,"'");
+}
+function parseModelJSON(raw,what){
+  const t=jsonSlice(raw);
+  try{return JSON.parse(t);}catch(e1){
+    try{
+      const fixed=repairJSON(t);
+      const v=JSON.parse(fixed);
+      chatMsg('sys','&#9888; '+what+' JSON needed repair (trailing comma or bare key)');
+      return v;
+    }catch(e2){
+      const m=/position (\d+)/.exec(e2.message);
+      const p=m?+m[1]:0;
+      const near=t.slice(Math.max(0,p-80),p+80).replace(/\s+/g,' ');
+      throw new Error(e2.message+'  |  near: …'+near+'…');
+    }
+  }
+}
+
+/* ============ stroke parsing + Bezier fit (SketchAgent Eq. 2) ============
+   Kept only for ANNOTATIONS now — the subject itself is animated, not drawn. */
+function parseStrokes(txt){
+  txt=txt.replace(/```[a-z]*\n?|```/g,"");
+  const out=[];
+  const blocks=[...txt.matchAll(/<s\d*>([\s\S]*?)<\/s\d*>/g)].map(m=>m[1]);
+  if(!blocks.length){
+    const ps=[...txt.matchAll(/<points>([\s\S]*?)<\/points>/g)];
+    const tb=[...txt.matchAll(/<t_values>([\s\S]*?)<\/t_values>/g)];
+    ps.forEach((p,i)=>blocks.push(
+      `<points>${p[1]}</points><t_values>${tb[i]?tb[i][1]:""}</t_values>`));
+  }
+  for(const b of blocks){
+    const pm=b.match(/<points>([\s\S]*?)<\/points>/);
+    if(!pm) continue;
+    const pts=[...pm[1].matchAll(/x\s*(\d+)\s*y\s*(\d+)/gi)].map(c=>[+c[1],+c[2]]);
+    if(!pts.length) continue;
+    const tm=b.match(/<t_values>([\s\S]*?)<\/t_values>/);
+    let ts=tm?(tm[1].match(/\d*\.?\d+/g)||[]).map(Number):[];
+    if(ts.length!==pts.length) ts=pts.map((_,i)=>pts.length>1?i/(pts.length-1):0);
+    const im=b.match(/<id>([\s\S]*?)<\/id>/);
+    out.push({pts,ts,label:im?im[1].trim():""});
+  }
+  return out;
+}
+const bern=t=>[(1-t)**3,3*(1-t)**2*t,3*(1-t)*t*t,t**3];
+function fitSegment(pts,ts){
+  if(pts.length===1) return [[pts[0],pts[0],pts[0],pts[0]]];
+  if(pts.length===2){const[a,b]=pts;
+    return [[a,[a[0]+(b[0]-a[0])/3,a[1]+(b[1]-a[1])/3],[a[0]+2*(b[0]-a[0])/3,a[1]+2*(b[1]-a[1])/3],b]];}
+  const t0=ts[0],span=Math.max(ts[ts.length-1]-t0,1e-9);
+  const A=ts.map(t=>bern((t-t0)/span));
+  const AtA=[...Array(4)].map((_,i)=>[...Array(4)].map((_,j)=>A.reduce((s,r)=>s+r[i]*r[j],0)));
+  const AtB=[...Array(4)].map((_,i)=>[A.reduce((s,r,k)=>s+r[i]*pts[k][0],0),
+                                      A.reduce((s,r,k)=>s+r[i]*pts[k][1],0)]);
+  const P=[[0,0],[0,0],[0,0],[0,0]];
+  for(let ax=0;ax<2;ax++){
+    const M=AtA.map(r=>[...r]), v=AtB.map(r=>r[ax]);
+    for(let c=0;c<4;c++){
+      let p=c;for(let r=c+1;r<4;r++)if(Math.abs(M[r][c])>Math.abs(M[p][c]))p=r;
+      [M[c],M[p]]=[M[p],M[c]];[v[c],v[p]]=[v[p],v[c]];
+      if(Math.abs(M[c][c])<1e-12)continue;
+      for(let r=0;r<4;r++){if(r===c)continue;
+        const f=M[r][c]/M[c][c];
+        for(let k=c;k<4;k++)M[r][k]-=f*M[c][k];v[r]-=f*v[c];}
+    }
+    for(let i=0;i<4;i++)P[i][ax]=Math.abs(M[i][i])>1e-12?v[i]/M[i][i]:pts[0][ax];
+  }
+  let err=0;
+  A.forEach((r,k)=>{const x=r[0]*P[0][0]+r[1]*P[1][0]+r[2]*P[2][0]+r[3]*P[3][0],
+    y=r[0]*P[0][1]+r[1]*P[1][1]+r[2]*P[2][1]+r[3]*P[3][1];
+    err=Math.max(err,Math.abs(x-pts[k][0]),Math.abs(y-pts[k][1]));});
+  if(err>0.9&&pts.length>=5){
+    const mid=pts.length>>1;
+    return [...fitSegment(pts.slice(0,mid+1),ts.slice(0,mid+1)),
+            ...fitSegment(pts.slice(mid),ts.slice(mid))];
+  }
+  P[0]=pts[0];P[3]=pts[pts.length-1];
+  return [P];
+}
+function fitStroke(st){
+  const segs=[];let start=0;
+  for(let i=1;i<st.pts.length;i++)
+    if(st.pts[i][0]===st.pts[i-1][0]&&st.pts[i][1]===st.pts[i-1][1]){segs.push([start,i]);start=i;}
+  segs.push([start,st.pts.length]);
+  st.beziers=[];
+  for(const[a,b]of segs) if(b-a>=1)
+    st.beziers.push(...fitSegment(st.pts.slice(a,b),st.ts.slice(a,b)));
+  return st;
+}
+function bezierPolyline(P,n=48,jit=0.09){
+  const pl=[];
+  for(let i=0;i<n;i++){const w=bern(i/(n-1));
+    pl.push([w[0]*P[0][0]+w[1]*P[1][0]+w[2]*P[2][0]+w[3]*P[3][0]+(Math.random()-.5)*jit*2,
+             w[0]*P[0][1]+w[1]*P[1][1]+w[2]*P[2][1]+w[3]*P[3][1]+(Math.random()-.5)*jit*2]);}
+  return pl;
+}
+function strokesToItems(strokes,jit=0.09){
+  const items=[];
+  for(const st of strokes){fitStroke(st);
+    st.beziers.forEach((P,i)=>items.push({pl:bezierPolyline(P,48,jit),label:i===0?st.label:null,st}));}
+  return items;
+}
+const centroid=st=>{
+  const cx=st.pts.reduce((s,p)=>s+p[0],0)/st.pts.length,
+        cy=st.pts.reduce((s,p)=>s+p[1],0)/st.pts.length;
+  return `x${Math.round(cx)}y${Math.round(cy)}`;
+};
+
+/* ============ animation engine ============
+   Elements are rendered as finished shapes that ANIMATE IN — they are never
+   drawn stroke by stroke. Each beat's elements enter together (staggered), then
+   keep whatever continuous motion they were given for the rest of the chapter. */
+const COLORS={ink:"#141412",blue:"#2456D6",red:"#C93A2E",green:"#1F9E7A",purple:"#7A5AD6"};
+const TINTS ={ink:"rgba(20,20,18,.05)",blue:"rgba(36,86,214,.09)",red:"rgba(201,58,46,.08)",
+               green:"rgba(31,158,122,.09)",purple:"rgba(122,90,214,.09)"};
+const ENTER_MS=520, STAGGER_MS=130;
+const easeOut=p=>1-Math.pow(1-p,3);
+const easeBack=p=>{const c=1.7;return 1+(c+1)*Math.pow(p-1,3)+c*Math.pow(p-1,2);};
+
+function normEls(spec){
+  /* flatten steps -> elements carrying their beat index, and sanity-clamp
+     everything the model gave us so one bad number can't wreck the board */
+  const out=[];
+  (spec||[]).forEach((step,si)=>{
+    (step.els||[]).slice(0,6).forEach((raw,ei)=>{
+      const e={...raw};
+      e.step=si; e.order=ei;
+      e.type=["box","circle","dot","arrow","line","text"].includes(e.type)?e.type:"box";
+      e.color=COLORS[e.color]?e.color:"ink";
+      e.in=["pop","fade","slide","grow"].includes(e.in)?e.in:"pop";
+      e.motion=["none","pulse","bob","flow","orbit"].includes(e.motion)?e.motion:"none";
+      const cl=(v,d)=>Number.isFinite(+v)?Math.max(1,Math.min(GRID,+v)):d;
+      e.x=cl(e.x,25); e.y=cl(e.y,25);
+      e.w=Math.max(2,Math.min(44,+e.w||10)); e.h=Math.max(2,Math.min(40,+e.h||8));
+      e.r=Math.max(1.5,Math.min(20,+e.r||5));
+      if(Array.isArray(e.from))e.from=[cl(e.from[0],10),cl(e.from[1],25)];
+      if(Array.isArray(e.to))e.to=[cl(e.to[0],30),cl(e.to[1],25)];
+      if((e.type==="arrow"||e.type==="line")&&(!e.from||!e.to)){
+        e.from=e.from||[e.x-5,e.y]; e.to=e.to||[e.x+5,e.y];
+      }
+      e.label=typeof e.label==="string"?e.label.slice(0,42):"";
+      e.text=typeof e.text==="string"?e.text.slice(0,60):"";
+      out.push(e);
+    });
+  });
+  return out;
+}
+function elAnchor(e){                       /* grid point the tutor points at */
+  if(e.type==="arrow"||e.type==="line")
+    return [(e.from[0]+e.to[0])/2,(e.from[1]+e.to[1])/2];
+  return [e.x,e.y];
+}
+function arrowHead(x1,y1,x2,y2,color,lw){
+  const a=Math.atan2(y2-y1,x2-x1), L=11+lw;
+  ctx.fillStyle=color; ctx.beginPath();
+  ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-L*Math.cos(a-0.42),y2-L*Math.sin(a-0.42));
+  ctx.lineTo(x2-L*Math.cos(a+0.42),y2-L*Math.sin(a+0.42));
+  ctx.closePath(); ctx.fill();
+}
+function labelAt(txt,px,py,color){
+  if(!txt)return;
+  ctx.font='19px "Caveat", cursive'; ctx.textAlign="center"; ctx.textBaseline="middle";
+  ctx.fillStyle=color; ctx.fillText(txt,px,py);
+}
+function drawEl(e,now,onMedia){
+  const p=e._p;                       /* entrance progress 0..1 */
+  if(p<=0)return;
+  const col=COLORS[e.color], tint=TINTS[e.color];
+  const lw=onMedia?3.4:2.8;
+  const t=now/1000;
+  let ox=0, oy=0, k=1;                /* continuous motion offsets */
+  if(!reducedMotion()&&p>=1){
+    if(e.motion==="pulse")k=1+0.045*Math.sin(t*2.6+e.order);
+    if(e.motion==="bob")oy=-Math.sin(t*1.9+e.order)*5;
+    if(e.motion==="orbit"){ox=Math.cos(t*1.7+e.order)*9;oy=Math.sin(t*1.7+e.order)*9;}
+  }
+  ctx.save();
+  ctx.globalAlpha=e.in==="fade"?easeOut(p):Math.min(1,p*1.6);
+  if(e.in==="slide")ox+=(1-easeOut(p))*36;
+  const scale=e.in==="pop"?easeBack(Math.min(p,1))*k
+             :e.in==="grow"?easeOut(p)*k:k;
+  ctx.lineWidth=lw; ctx.lineCap="round"; ctx.lineJoin="round"; ctx.strokeStyle=col;
+
+  if(e.type==="box"||e.type==="circle"||e.type==="dot"||e.type==="text"){
+    const px=sx(e.x)+ox, py=sy(e.y)+oy;
+    ctx.translate(px,py); ctx.scale(scale,scale); ctx.translate(-px,-py);
+    if(e.type==="box"){
+      const w=e.w*sscale(), h=e.h*sscale(), r=Math.min(10,w/4,h/4);
+      ctx.beginPath();
+      ctx.moveTo(px-w/2+r,py-h/2);
+      ctx.arcTo(px+w/2,py-h/2,px+w/2,py+h/2,r);
+      ctx.arcTo(px+w/2,py+h/2,px-w/2,py+h/2,r);
+      ctx.arcTo(px-w/2,py+h/2,px-w/2,py-h/2,r);
+      ctx.arcTo(px-w/2,py-h/2,px+w/2,py-h/2,r);
+      ctx.closePath();
+      ctx.fillStyle=onMedia?"rgba(253,253,248,.80)":tint; ctx.fill(); ctx.stroke();
+      labelAt(e.label,px,py,col);
+    }else if(e.type==="circle"){
+      const r=e.r*sscale();
+      ctx.beginPath(); ctx.arc(px,py,r,0,7);
+      ctx.fillStyle=onMedia?"rgba(253,253,248,.80)":tint; ctx.fill(); ctx.stroke();
+      labelAt(e.label,px,py,col);
+    }else if(e.type==="dot"){
+      ctx.beginPath(); ctx.arc(px,py,7,0,7); ctx.fillStyle=col; ctx.fill();
+      labelAt(e.label,px,py-18,col);
+    }else{
+      ctx.font='24px "Caveat", cursive'; ctx.textAlign="center"; ctx.textBaseline="middle";
+      if(onMedia){const m=ctx.measureText(e.text||e.label);
+        ctx.fillStyle="rgba(253,253,248,.85)";
+        ctx.fillRect(px-m.width/2-8,py-16,m.width+16,32);}
+      ctx.fillStyle=col; ctx.fillText(e.text||e.label,px,py);
+    }
+  }else{                                     /* arrow / line */
+    const x1=sx(e.from[0])+ox, y1=sy(e.from[1])+oy;
+    const fx=sx(e.to[0])+ox,  fy=sy(e.to[1])+oy;
+    const g=e.in==="grow"||e.in==="pop"?easeOut(p):1;   /* extend to length */
+    const x2=x1+(fx-x1)*g, y2=y1+(fy-y1)*g;
+    if(e.motion==="flow"&&p>=1&&!reducedMotion()){
+      ctx.setLineDash([13,9]); ctx.lineDashOffset=-(t*46)%22;
+    }
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    ctx.setLineDash([]);
+    if(e.type==="arrow"&&g>0.55)arrowHead(x1,y1,x2,y2,col,lw);
+    if(e.label){
+      const mx=(x1+x2)/2, my=(y1+y2)/2-16;
+      if(onMedia){const m=ctx.measureText(e.label);
+        ctx.fillStyle="rgba(253,253,248,.85)";
+        ctx.fillRect(mx-m.width/2-6,my-12,m.width+12,24);}
+      labelAt(e.label,mx,my,col);
+    }
+  }
+  ctx.restore();
+}
+
+/* ============ 3D vector data: skeleton + actuated curve ============
+   Mirrors motion.py / lineform.py. The wire carries SERVO ANGLES, not points
+   — the same thing that goes down LineFORM's serial link to the Arduino — so
+   this runs the forward kinematics to recover the shape. project() must stay
+   byte-identical to motion.project(), because the dense flow field was
+   computed in that exact space and would otherwise land beside the body. */
+const V={
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  len:a=>Math.hypot(a[0],a[1],a[2]),
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
+  norm:a=>{const n=Math.hypot(a[0],a[1],a[2]);return n<1e-12?[0,0,1]:[a[0]/n,a[1]/n,a[2]/n];},
+  lerp:(a,b,t)=>[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t],
+  rot:(v,ax,an)=>{const c=Math.cos(an),s=Math.sin(an);
+    return V.add(V.add(V.mul(v,c),V.mul(V.cross(ax,v),s)),V.mul(ax,V.dot(ax,v)*(1-c)));}
+};
+/* world metres -> grid coords, matching motion.project() exactly */
+function project(p,cam){
+  const t=cam.target;
+  let x=p[0]-t[0],y=p[1]-t[1],z=p[2]-t[2];
+  const cy=Math.cos(cam.yaw),sy=Math.sin(cam.yaw);
+  [x,z]=[x*cy+z*sy,-x*sy+z*cy];
+  const cp=Math.cos(cam.pitch),sp=Math.sin(cam.pitch);
+  [y,z]=[y*cp-z*sp,y*sp+z*cp];
+  const depth=Math.max(cam.dist-z,0.05);
+  const f=1/Math.tan(cam.fov*Math.PI/180/2);
+  return [x*f/depth,y*f/depth,depth];
+}
+const NDC2G=20, GC=25.5;                      /* ndc -> the 50x50 stroke grid */
+const g2=(nd)=>[GC+nd[0]*NDC2G,GC+nd[1]*NDC2G];
+/* --- the shared room (see world.py) ------------------------------------
+   WX is the override the world renderer installs while it draws one actor:
+   `xf` lifts that actor's local metres into room metres and `cam` is the one
+   camera the room is filmed with. Every routine below already sends its
+   geometry through pxOf, so a skeleton, a hand and an actuated curve need no
+   changes at all to stop owning the board and start standing in a place. */
+const WX={on:false,cam:null,xf:null,hideHands:false,bound:false,hud:null,dot:1};
+const pxOf=(p,cam)=>{const g=g2(project(WX.on?WX.xf(p):p,WX.on?WX.cam:cam));
+  return [sx(g[0]),sy(g[1])];};
+/* pixels per metre at a world point, so a head stays 23 cm across whether
+   the camera is at 3 m or 60 cm. Fixed grid-unit sizes cannot do that. */
+function pxPerM(p,cam){
+  const c=WX.on?WX.cam:cam, d=Math.max(project(WX.on?WX.xf(p):p,c)[2],0.05);
+  return (1/Math.tan(c.fov*Math.PI/360))*NDC2G*sscale()/d;
+}
+/* landmark dots and bone widths are UI, not anatomy: shrink them when the
+   room camera is further out than the clip's own camera ever was */
+const D=r=>WX.on?r*WX.dot:r;
+
+/* --- chain kinematics, mirroring lineform.py ------------------------- */
+const DEFAULT_HEADING=[[0,0,1],[0,1,0],[1,0,0]];
+function chainHeading(path){
+  const fwd=V.norm(V.sub(path[1],path[0]));
+  const ref=Math.abs(fwd[2])<0.9?[0,0,1]:[0,1,0];
+  const right=V.norm(V.cross(fwd,ref));
+  return [right,V.norm(V.cross(right,fwd)),fwd];
+}
+function fkChain(anglesDeg,dev,base,heading){
+  let [right,up,fwd]=heading||DEFAULT_HEADING;
+  const lim=dev.limit_deg*Math.PI/180, pts=[base]; let p=base;
+  for(let i=0;i<anglesDeg.length;i++){
+    const ax=dev.axes==='single'?right:(i%2===0?right:up);
+    const th=Math.max(-lim,Math.min(lim,anglesDeg[i]*Math.PI/180));
+    right=V.rot(right,ax,th); up=V.rot(up,ax,th); fwd=V.rot(fwd,ax,th);
+    p=V.add(p,V.mul(fwd,dev.link_m)); pts.push(p);
+  }
+  return pts;
+}
+/* landmarks -> one control path per chain, mirroring motion._control_paths */
+function ctrlPaths(pos,JI){
+  const mid=(a,b)=>V.mul(V.add(pos[JI[a]],pos[JI[b]]),0.5);
+  const hips=mid('hip_l','hip_r'), shou=mid('shoulder_l','shoulder_r');
+  return {
+    spine:[hips,V.lerp(hips,shou,0.5),shou],
+    neck:[shou,V.lerp(shou,pos[JI.nose],0.6),pos[JI.nose]],
+    arm_l:[pos[JI.shoulder_l],pos[JI.elbow_l],pos[JI.wrist_l]],
+    arm_r:[pos[JI.shoulder_r],pos[JI.elbow_r],pos[JI.wrist_r]],
+    leg_l:[pos[JI.hip_l],pos[JI.knee_l],pos[JI.ankle_l]],
+    leg_r:[pos[JI.hip_r],pos[JI.knee_r],pos[JI.ankle_r]]
+  };
+}
+function b64bytes(s){
+  const bin=atob(s), out=new Int16Array(bin.length);
+  for(let i=0;i<bin.length;i++)out[i]=bin.charCodeAt(i)-128;   /* stored +128 */
+  return out;
+}
+
+/* --- drawing ---------------------------------------------------------- */
+let showVectors=true;
+function strokePath(pts,cam,color,lw,halo){
+  const pass=(c,w)=>{ctx.strokeStyle=c;ctx.lineWidth=w;ctx.lineCap='round';ctx.lineJoin='round';
+    ctx.beginPath();
+    pts.forEach((p,i)=>{const q=pxOf(p,cam);i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]);});
+    ctx.stroke();};
+  if(halo)pass('rgba(253,253,248,.92)',lw+4);
+  pass(color,lw);
+}
+function vecArrow(p,v,cam,scale,color){
+  const a=pxOf(p,cam), b=pxOf(V.add(p,V.mul(v,scale)),cam);
+  const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy);
+  if(L<4)return;
+  ctx.strokeStyle=color;ctx.lineWidth=2.2;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+  const an=Math.atan2(dy,dx),h=Math.min(9,L*0.5);
+  ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(b[0],b[1]);
+  ctx.lineTo(b[0]-h*Math.cos(an-0.45),b[1]-h*Math.sin(an-0.45));
+  ctx.lineTo(b[0]-h*Math.cos(an+0.45),b[1]-h*Math.sin(an+0.45));
+  ctx.closePath();ctx.fill();
+}
+function drawFlow(clip,fi,cam){
+  /* The field is quantised in this clip's OWN camera's ndc space, so under a
+     room camera that moves it would be a field pinned to the wrong frame of
+     reference. The server drops it from world actors for the same reason. */
+  const fl=clip.flow; if(WX.on||!fl||!fl.frames.length)return;
+  const idx=Math.min(Math.floor(fi/(fl.step||1)),fl.frames.length-1);
+  const d=b64bytes(fl.frames[idx]), sc=fl.scale;
+  for(let gy=0;gy<fl.h;gy++)for(let gx=0;gx<fl.w;gx++){
+    const k=(gy*fl.w+gx)*2;
+    const vx=d[k]/127*sc, vy=d[k+1]/127*sc;
+    const mag=Math.hypot(vx,vy); if(mag<sc*0.10)continue;
+    /* the field lives in ndc, so walk it back to the same grid the body uses */
+    const nx=gx/(fl.w-1)*2-1, ny=1-gy/(fl.h-1)*2;
+    const a=[sx(GC+nx*NDC2G),sy(GC+ny*NDC2G)];
+    const L=Math.min(26,mag/sc*22);
+    const an=Math.atan2(-vy,vx);
+    const b=[a[0]+Math.cos(an)*L,a[1]+Math.sin(an)*L];
+    ctx.strokeStyle=`rgba(122,90,214,${0.18+0.5*mag/sc})`;ctx.lineWidth=1.6;
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();
+    ctx.fillStyle=`rgba(122,90,214,${0.3+0.5*mag/sc})`;
+    ctx.beginPath();ctx.arc(b[0],b[1],1.9,0,7);ctx.fill();
+  }
+}
+function drawHud(lines,accent){
+  /* Anchored to the current viewport, so each pane of a composite scene
+     carries its own readout instead of four of them stacking in one corner. */
+  if(!lines.length)return;
+  /* In a shared room the actors do not each get a corner — the readouts are
+     collected and merged into one panel by drawWorldClip. */
+  if(WX.on){if(WX.hud)WX.hud.push({lines:lines,accent:accent});return;}
+  const k=VP.on?Math.max(0.62,VP.k):1;
+  const fs=Math.round(13*k), lh=Math.round(18*k), pad=10*(VP.on?VP.k:1);
+  const ox=(VP.on?VP.x:0)+pad, oy=(VP.on?VP.y:0)+pad;
+  ctx.font=fs+'px "IBM Plex Mono", monospace';
+  const w=Math.max(...lines.map(l=>ctx.measureText(l).width))+18*k;
+  const h=lines.length*lh+12*k;
+  ctx.fillStyle='rgba(253,253,248,.86)';ctx.fillRect(ox,oy,w,h);
+  ctx.strokeStyle='rgba(20,20,18,.12)';ctx.lineWidth=1;ctx.strokeRect(ox,oy,w,h);
+  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  lines.forEach((l,i)=>{ctx.fillStyle=i===0?(accent||'#2456D6'):'#5A5F58';
+    ctx.fillText(l,ox+9*k,oy+(fs+6*k)+i*lh);});
+}
+function drawSkeleton(clip,t){
+  const cam=clip.camera, n=clip.frames.length;
+  const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
+  const JI={}; clip.joints.forEach((nm,i)=>JI[nm]=i);
+  const pos=clip.frames[fi], vel=clip.vectors[fi];
+  if(showVectors)drawFlow(clip,fi,cam);
+
+  /* ground shadow so the body is standing on something, not floating.
+     In a room, sizes are metres: 4.2 grid units becomes 42 cm of shadow. */
+  const foot=pxOf([0,0,0],cam), sc=WX.on?pxPerM([0,0,0],cam)*0.1:sscale();
+  ctx.fillStyle='rgba(20,20,18,.07)';
+  ctx.beginPath();ctx.ellipse(foot[0],foot[1],sc*4.2,sc*1.1,0,0,7);ctx.fill();
+
+  /* every limb is an actuated curve: FK the servo angles back into shape */
+  const paths=ctrlPaths(pos,JI);
+  for(const k in clip.chains){
+    const ch=clip.chains[k]; if(!ch.angles||!ch.angles[fi])continue;
+    const base=paths[k]?paths[k][0]:[0,0,0];
+    const pts=fkChain(ch.angles[fi],ch.device,base,paths[k]&&chainHeading(paths[k]));
+    strokePath(pts,cam,'#141412',D(k.startsWith('arm')?4.2:3.4),true);
+    ctx.fillStyle='#2456D6';                       /* one dot per servo */
+    pts.forEach((p,i)=>{if(i===0||i===pts.length-1)return;
+      const q=pxOf(p,cam);ctx.beginPath();ctx.arc(q[0],q[1],D(1.8),0,7);ctx.fill();});
+  }
+  if(clip.constraint&&clip.constraint.points[fi])          /* LineFORM Fig. 9 */
+    strokePath(clip.constraint.points[fi],cam,'#1F9E7A',D(3.2),true);
+
+  /* head, then the tracked landmarks on top of the chains */
+  const head=pxOf(pos[JI.nose],cam);
+  ctx.strokeStyle='#141412';ctx.lineWidth=D(3);ctx.fillStyle='#FDFDF8';
+  ctx.beginPath();ctx.arc(head[0],head[1],sc*1.15,0,7);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#C93A2E';
+  ['wrist_l','wrist_r','elbow_l','elbow_r'].forEach(nm=>{
+    const q=pxOf(pos[JI[nm]],cam);ctx.beginPath();ctx.arc(q[0],q[1],D(3.4),0,7);ctx.fill();});
+
+  /* MediaPipe-style fingers on whichever hand is acting — suppressed when a
+     detailed hand actor is bound to this wrist, since that IS this hand */
+  const hands=WX.hideHands?{}:(clip.hands[fi]||{});
+  for(const k in hands){
+    const h=hands[k];
+    ctx.strokeStyle='#1F9E7A';ctx.lineWidth=D(2);
+    clip.hand_bones.forEach(([a,b])=>{
+      const p=pxOf(h[a],cam),q=pxOf(h[b],cam);
+      ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();});
+    ctx.fillStyle='#1F9E7A';
+    h.forEach(p=>{const q=pxOf(p,cam);ctx.beginPath();ctx.arc(q[0],q[1],D(2.1),0,7);ctx.fill();});
+  }
+
+  if(showVectors){
+    /* wrist trail: where this hand has been over the last second */
+    const back=Math.max(0,fi-clip.fps);
+    ['wrist_l','wrist_r'].forEach(nm=>{
+      ctx.lineWidth=2;
+      for(let i=back;i<fi;i++){
+        const a=pxOf(clip.frames[i][JI[nm]],cam),b=pxOf(clip.frames[i+1][JI[nm]],cam);
+        ctx.strokeStyle=`rgba(201,58,46,${0.05+0.45*(i-back)/Math.max(fi-back,1)})`;
+        ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();}
+    });
+    /* per-joint motion vectors — the actual velocity, not a decoration */
+    ['wrist_l','wrist_r','elbow_l','elbow_r','nose'].forEach(nm=>{
+      const v=vel[JI[nm]];
+      if(V.len(v)>0.12)vecArrow(pos[JI[nm]],v,cam,0.28,'#C93A2E');});
+  }
+
+  const seg=(clip.segments||[]).find(s=>t>=s.start&&t<s.end);
+  const ges=(clip.gestures||[]).find(g=>t>=g.start&&t<g.end);
+  const sp=V.len(vel[JI.wrist_r]);
+  drawHud([
+    ges?`gesture: ${ges.name}  (${ges.hand}, conf ${ges.conf})`:'gesture: —',
+    seg?`step ${seg.step}: ${seg.primitive}`:'',
+    `wrist ${sp.toFixed(2)} m/s   frame ${fi+1}/${n}`,
+    `${Object.keys(clip.chains).length} actuated curve chains`
+  ].filter(Boolean),'#C93A2E');
+}
+function drawHandClip(clip,t){
+  /* Five finger chains, drawn from the servo angles the way the body is.
+     The hand is ~18cm so the camera sits close; everything else is shared. */
+  const cam=clip.camera, n=clip.frames.length;
+  const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
+  const pts=clip.frames[fi], vel=clip.vectors[fi];
+  if(showVectors)drawFlow(clip,fi,cam);
+
+  /* palm first, as a filled quad, so fingers read as attached to something */
+  const LMI={}; clip.landmarks.forEach((nm,i)=>LMI[nm]=i);
+  const palm=['wrist','index_mcp','middle_mcp','ring_mcp','pinky_mcp']
+    .map(nm=>pxOf(pts[LMI[nm]],cam));
+  ctx.fillStyle='rgba(36,86,214,.10)';ctx.strokeStyle='#141412';ctx.lineWidth=D(3);
+  ctx.beginPath();palm.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.closePath();ctx.fill();ctx.stroke();
+
+  clip.bones.forEach(([a,b])=>{
+    const p=pxOf(pts[a],cam),q=pxOf(pts[b],cam);
+    ctx.strokeStyle='rgba(253,253,248,.92)';ctx.lineWidth=D(8);
+    ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();
+    ctx.strokeStyle='#141412';ctx.lineWidth=D(4);ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();
+  });
+  /* one dot per landmark; the three servo joints per finger in blue */
+  const servo=new Set();
+  clip.fingers.forEach(f=>['_mcp','_pip','_dip','_ip'].forEach(sfx=>{
+    if(LMI[f+sfx]!==undefined)servo.add(LMI[f+sfx]);}));
+  pts.forEach((p,i)=>{
+    const q=pxOf(p,cam);
+    ctx.fillStyle=servo.has(i)?'#2456D6':'#C93A2E';
+    ctx.beginPath();ctx.arc(q[0],q[1],D(servo.has(i)?3.4:4.2),0,7);ctx.fill();});
+
+  if(showVectors){
+    const back=Math.max(0,fi-Math.round(clip.fps*0.8));
+    clip.fingers.forEach(f=>{
+      const tip=LMI[f+'_tip']; if(tip===undefined)return;
+      ctx.lineWidth=2;
+      for(let i=back;i<fi;i++){
+        const a=pxOf(clip.frames[i][tip],cam),b=pxOf(clip.frames[i+1][tip],cam);
+        ctx.strokeStyle=`rgba(31,158,122,${0.06+0.5*(i-back)/Math.max(fi-back,1)})`;
+        ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();}
+      if(V.len(vel[tip])>0.05)vecArrow(pts[tip],vel[tip],cam,0.9,'#C93A2E');
+    });
+  }
+
+  const ges=(clip.gestures||[]).find(g=>t>=g.start&&t<g.end);
+  const seg=(clip.segments||[]).find(s=>t>=s.start&&t<s.end);
+  const curls=clip.curls?clip.curls[fi]:null;
+  const lines=[ges?`hand gesture: ${ges.name}  (conf ${ges.conf})`:'hand gesture: —'];
+  if(seg)lines.push(`step ${seg.step}: ${seg.text.slice(0,44)}`);
+  if(curls)lines.push('curl '+clip.fingers.map((f,i)=>
+    f[0].toUpperCase()+curls[i].toFixed(2).slice(1)).join(' '));
+  lines.push(`5 chains x 3 servos - ${clip.backend}`);
+  drawHud(lines,'#1F9E7A');
+}
+function drawLineformClip(clip,t){
+  const cam=clip.camera||{yaw:0.5,pitch:0.12,dist:3.0,target:[0,0.9,0],fov:40};
+  const n=clip.frames.length;
+  const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
+  const pts=clip.frames[fi];
+  const foot=pxOf([0,0,0],cam), sc=WX.on?pxPerM([0,0,0],cam)*0.1:sscale();
+  if(!WX.on||!WX.bound){                /* a chain wrapped on a limb has no
+                                           floor under it to cast onto */
+    ctx.fillStyle='rgba(20,20,18,.06)';
+    ctx.beginPath();ctx.ellipse(foot[0],foot[1],sc*4.5,sc*1.2,0,0,7);ctx.fill();
+  }
+  strokePath(pts,cam,'#141412',D(5),true);
+  pts.forEach((p,i)=>{                            /* servo housings */
+    const q=pxOf(p,cam);
+    ctx.fillStyle=i===0?'#C93A2E':'#2456D6';
+    ctx.beginPath();ctx.arc(q[0],q[1],D(i===0?4:2.6),0,7);ctx.fill();});
+  const seg=clip.segment?clip.segment[fi]:0;
+  const d=clip.device;
+  drawHud([
+    `shape: ${(clip.labels&&clip.labels[seg])||'curve'}`,
+    `${d.name} — ${d.joints} servos, ${(d.link_m*100).toFixed(1)} cm links`,
+    `fit residual ${((clip.fit_error&&clip.fit_error[seg])*100||0).toFixed(1)} cm`
+      +(clip.clipped&&clip.clipped[seg]?`, ${clip.clipped[seg]} at limit`:''),
+    clip.snap?'snap-to-grid: right angles only':''
+  ].filter(Boolean));
+}
+
+/* --- composite scenes: several clips, one playhead ---------------------- */
+const CLIP_DRAW={lineform:drawLineformClip,hand:drawHandClip,skeleton:drawSkeleton};
+const PANE_LABEL={lineform:'actuated curve',hand:'hand gesture',skeleton:'body skeleton'};
+function paneChrome(r,clip,i){
+  /* A hairline and a caption per pane, drawn in raw pixels so it does not
+     move with the pane's own camera. */
+  const rx=r[0]*cv.width, ry=r[1]*cv.height, rw=r[2]*cv.width, rh=r[3]*cv.height;
+  ctx.strokeStyle='rgba(20,20,18,.14)';ctx.lineWidth=1;
+  ctx.strokeRect(rx+.5,ry+.5,rw-1,rh-1);
+  const name=(clip.title||'')+(clip.title?' — ':'')+(PANE_LABEL[clip.kind]||clip.kind);
+  ctx.font='11px "IBM Plex Mono", monospace';
+  ctx.textAlign='right';ctx.textBaseline='alphabetic';
+  ctx.fillStyle='rgba(253,253,248,.88)';
+  const w=ctx.measureText(name).width+12;
+  ctx.fillRect(rx+rw-w-6,ry+rh-22,w,17);
+  ctx.fillStyle='#8A9086';ctx.fillText(name,rx+rw-12,ry+rh-10);
+  ctx.textAlign='left';
+}
+function drawComposeClip(clip,t){
+  const parts=clip.parts||[], lay=clip.layout||[];
+  parts.forEach((p,i)=>{
+    const r=lay[i]||[0,0,1,1];
+    const fn=CLIP_DRAW[p.kind]||drawSkeleton;
+    withViewport(r,()=>{try{fn(p,t);}catch(e){}});
+    if(parts.length>1)paneChrome(r,p,i);
+  });
+}
+
+/* --- one shared room ----------------------------------------------------
+   The panes above are three separate rooms: nothing in one can be behind
+   anything in another, and the generated footage can only ever be a flat
+   backdrop pasted behind all of them. A world clip (world.py) places the
+   same clips at real positions in ONE room, hangs the diffusion footage on
+   a surface inside it, and films the lot with a single camera that the
+   director moves, the student drags, and the tutor can take over mid-answer.
+
+   That is what LineFORM's third affordance needs. Display and interaction
+   fit in a pane; a constraint — "wrapping the actuated curve around limbs
+   like bandages so that it acts as an exoskeleton" — is a spatial
+   relationship between the chain and the arm, and a pane cannot hold one. */
+const VIEW={dyaw:0,dpitch:0,dist:1,on:false};        /* the student's drag */
+const QCAM={on:false,from:null,to:null,t0:0,ms:1300,label:''};  /* tutor's move */
+const WORLD_HUD=[];
+let WORLD_ANCHORS=[], WORLD_CAM=null, WORLD_SHOT='';
+const worldOn=()=>!!(player.clip&&player.clip.kind==='world');
+function resetView(){VIEW.dyaw=VIEW.dpitch=0;VIEW.dist=1;VIEW.on=false;QCAM.on=false;}
+
+const yawRot=(p,a)=>{const c=Math.cos(a),s=Math.sin(a);
+  return [p[0]*c+p[2]*s,p[1],-p[0]*s+p[2]*c];};
+const smooth=p=>p*p*(3-2*p);
+const clampf=(v,a,b)=>Math.max(a,Math.min(b,v));
+const fiOf=(c,t)=>Math.max(0,Math.min((c.frames||[]).length-1,Math.floor(t*c.fps)));
+/* how far each kind of clip was filmed from when it owned the board — used
+   to keep landmark dots the right weight once the room camera moves */
+const NATIVE_DIST={skeleton:3.2,hand:0.62,lineform:3.0};
+const ANCHOR_NAMES={skeleton:["wrist_r","wrist_l","elbow_r","nose"],
+                    hand:["index_tip","thumb_tip","wrist"],
+                    lineform:["base","tip","middle"]};
+const actorOf=(clip,id)=>(clip.actors||[]).find(a=>a.id===id);
+
+/* a named point in an actor's OWN metres */
+function rawPoint(a,name,fi){
+  const c=a.clip, f=(c.frames||[])[fi];
+  if(!f)return null;
+  if(a.kind==='skeleton'){const i=(c.joints||[]).indexOf(name);return i<0?null:f[i];}
+  if(a.kind==='hand'){const i=(c.landmarks||[]).indexOf(name);return i<0?null:f[i];}
+  return name==='base'?f[0]:name==='tip'?f[f.length-1]:f[f.length>>1];
+}
+/* Where an actor stands this frame. A bound actor rides another actor's
+   joint, which is how a chain stays bandaged to a forearm that is moving
+   and how the detailed hand stays the body's own right hand. */
+function actorAt(a,clip,t,depth){
+  if(!a.bind||(depth||0)>3)return a.at;
+  const host=actorOf(clip,a.bind.actor); if(!host)return a.at;
+  const p=rawPoint(host,a.bind.point,fiOf(host.clip,t)); if(!p)return a.at;
+  const w=actorXF(host,clip,t,(depth||0)+1)(p), o=a.bind.offset||[0,0,0];
+  return [w[0]+o[0],w[1]+o[1],w[2]+o[2]];
+}
+/* p_world = at + yaw_rot(scale * (p_local - origin)) — world.py's transform */
+function actorXF(a,clip,t,depth){
+  const at=actorAt(a,clip,t,depth), o=a.origin||[0,0,0];
+  const s=a.scale==null?1:a.scale, y=a.yaw||0;
+  return p=>{const q=yawRot([(p[0]-o[0])*s,(p[1]-o[1])*s,(p[2]-o[2])*s],y);
+    return [q[0]+at[0],q[1]+at[1],q[2]+at[2]];};
+}
+const worldPoint=(a,clip,t,name)=>{
+  const p=rawPoint(a,name,fiOf(a.clip,t));
+  return p?actorXF(a,clip,t,0)(p):null;};
+
+/* --- the camera: a shot list, a drag, and whatever the tutor asked for --- */
+function resolveTarget(tg,clip,t){
+  if(Array.isArray(tg))return tg;
+  if(tg&&tg.actor){
+    const a=actorOf(clip,tg.actor);
+    if(a)return worldPoint(a,clip,t,tg.point)||a.at;
+  }
+  return (clip.camera&&clip.camera.target)||[0,1,0];
+}
+const shotCam=(s,clip,t)=>({yaw:s.yaw,pitch:s.pitch,dist:s.dist,fov:s.fov||40,
+                            target:resolveTarget(s.target,clip,t)});
+function blendCam(a,b,p){
+  const l=(x,y)=>x+(y-x)*p;
+  return {yaw:l(a.yaw,b.yaw),pitch:l(a.pitch,b.pitch),dist:l(a.dist,b.dist),
+          fov:l(a.fov||40,b.fov||40),
+          target:[l(a.target[0],b.target[0]),l(a.target[1],b.target[1]),
+                  l(a.target[2],b.target[2])]};
+}
+function camAt(clip,t){
+  const shots=clip.shots||[];
+  let cam=shots.length?shotCam(shots[0],clip,t)
+         :{...clip.camera,target:((clip.camera||{}).target||[0,1,0]).slice()};
+  let label=shots.length?shots[0].label:'';
+  for(let i=1;i<shots.length;i++){
+    const s=shots[i], mv=s.move||0;
+    if(t<s.t-mv)break;                       /* this move has not started yet */
+    const from=shotCam(shots[i-1],clip,t), to=shotCam(s,clip,t);
+    if(mv>0&&t<s.t){
+      cam=blendCam(from,to,smooth((t-(s.t-mv))/mv));
+      label=shots[i-1].label+' → '+s.label;
+    }else{cam=to;label=s.label;}
+  }
+  WORLD_SHOT=label;
+  return cam;
+}
+function liveCam(clip,t){
+  let cam=camAt(clip,t);
+  if(QCAM.on){                          /* the tutor answered by moving */
+    const p=smooth(Math.min((performance.now()-QCAM.t0)/QCAM.ms,1));
+    cam=blendCam(QCAM.from,{...QCAM.to,target:resolveTarget(QCAM.to.target,clip,t)},p);
+    WORLD_SHOT=QCAM.label||'tutor camera';
+  }
+  if(VIEW.on){                          /* the student is holding the camera */
+    cam={...cam,yaw:cam.yaw+VIEW.dyaw,
+         pitch:clampf(cam.pitch+VIEW.dpitch,-0.5,1.15),
+         dist:clampf(cam.dist*VIEW.dist,0.28,9)};
+    WORLD_SHOT=(WORLD_SHOT||'wide')+' (yours)';
+  }
+  return cam;
+}
+
+/* --- the room itself ----------------------------------------------------- */
+function drawGround(g,cam){
+  const y=g.y||0, h=g.half||2.6, st=g.step||0.4;
+  ctx.lineWidth=1;
+  const seg=(a,b)=>{
+    const da=project(a,cam)[2], db=project(b,cam)[2];
+    if(da<0.35||db<0.35)return;              /* through or behind the lens */
+    const p=pxOf(a,cam), q=pxOf(b,cam);
+    ctx.strokeStyle='rgba(20,20,18,'+(0.11*Math.min(1,2.4/Math.max(da,db))).toFixed(3)+')';
+    ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();
+  };
+  for(let i=-h;i<=h+1e-6;i+=st){seg([-h,y,i],[h,y,i]);seg([i,y,-h],[i,y,h]);}
+}
+function screenCorners(s){
+  const c=s.center, w=(s.w||3.4)/2, h=(s.h||1.9)/2, r=yawRot([1,0,0],s.yaw||0);
+  const at=(k,j)=>[c[0]+r[0]*w*k,c[1]+h*j,c[2]+r[2]*w*k];
+  return [at(-1,1),at(1,1),at(1,-1),at(-1,-1)];        /* TL TR BR BL */
+}
+/* affine map of a source triangle onto a destination triangle: two of these
+   put a moving image on a quad that is standing in the room, so the footage
+   skews with the wall instead of being pasted over the whole board */
+function texTri(img,u0,v0,u1,v1,u2,v2,x0,y0,x1,y1,x2,y2){
+  const den=u0*(v2-v1)-u1*(v2-v0)+u2*(v1-v0);
+  if(!den)return;
+  ctx.save();
+  ctx.beginPath();ctx.moveTo(x0,y0);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);
+  ctx.closePath();ctx.clip();
+  ctx.transform(
+    -(v0*(x2-x1)-v1*(x2-x0)+v2*(x1-x0))/den,
+     (v0*(y2-y1)-v1*(y2-y0)+v2*(y1-y0))/den,
+     (u0*(x2-x1)-u1*(x2-x0)+u2*(x1-x0))/den,
+    -(u0*(y2-y1)-u1*(y2-y0)+u2*(y1-y0))/den,
+     (u0*(v2*x1-v1*x2)+v0*(u1*x2-u2*x1)+(u2*v1-u1*v2)*x0)/den,
+     (u0*(v2*y1-v1*y2)+v0*(u1*y2-u2*y1)+(u2*v1-u1*v2)*y0)/den);
+  ctx.drawImage(img,0,0);
+  ctx.restore();
+}
+function drawScreen(s,cam,t){
+  const C=screenCorners(s);
+  if(C.some(p=>project(p,cam)[2]<0.3))return;    /* the camera walked past it */
+  const P=C.map(p=>pxOf(p,cam));
+  /* a step's own clip wins over the chapter's single clip */
+  const reel=reelAt(t);
+  const pv=player.videoEl;
+  const vid=(reel&&reel.el)||((pv&&pv.readyState>=2)?pv:null);
+  const im=player.imgEl;
+  const src=vid||((im&&im.complete&&im.naturalWidth)?im:null);
+  const sw=src?(vid?(vid.videoWidth||16):src.naturalWidth):16;
+  const sh=src?(vid?(vid.videoHeight||9):src.naturalHeight):9;
+  const path=()=>{ctx.beginPath();
+    P.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();};
+  path(); ctx.fillStyle=src?'#141412':'rgba(20,20,18,.045)'; ctx.fill();
+  if(src){
+    texTri(src,0,0,sw,0,sw,sh,P[0][0],P[0][1],P[1][0],P[1][1],P[2][0],P[2][1]);
+    texTri(src,0,0,sw,sh,0,sh,P[0][0],P[0][1],P[2][0],P[2][1],P[3][0],P[3][1]);
+  }
+  path(); ctx.strokeStyle='rgba(20,20,18,.32)'; ctx.lineWidth=2; ctx.stroke();
+  const mid=[(P[3][0]+P[2][0])/2,(P[3][1]+P[2][1])/2];
+  ctx.font='11px "IBM Plex Mono", monospace';
+  ctx.textAlign='center';ctx.textBaseline='top';
+  ctx.fillStyle=src?'#8A9086':'rgba(138,144,134,.75)';
+  const cap=reel&&reel.cue
+    ?(reel.el?'footage: '+reel.cue.text.slice(0,54)
+             :'no clip for "'+reel.cue.text.slice(0,40)+'"')
+    :(src?(s.label||'generated footage'):'screen — no clip generated');
+  ctx.fillText(cap,mid[0],mid[1]+6);
+  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+}
+function drawActor(a,clip,t,cam){
+  const fn=CLIP_DRAW[a.kind]; if(!fn)return;
+  const at=actorAt(a,clip,t,0);
+  const native=NATIVE_DIST[a.kind]||3.0;
+  WX.on=true; WX.cam=cam; WX.xf=actorXF(a,clip,t,0);
+  WX.hideHands=!!a.hide_hands; WX.bound=!!a.bind; WX.hud=WORLD_HUD;
+  WX.dot=clampf(native/Math.max(project(at,cam)[2],0.05)*(a.scale||1),0.35,1.6);
+  try{fn(a.clip,Math.min(t,a.clip.seconds-1e-3));}
+  finally{WX.on=false;WX.hud=null;WX.hideHands=false;WX.bound=false;WX.dot=1;}
+}
+/* the points the tutor may annotate, aim the camera at, or bind to */
+function worldAnchors(clip,t,cam){
+  const out=[];
+  (clip.actors||[]).forEach(a=>{
+    const names=(clip.anchors&&clip.anchors[a.id])||ANCHOR_NAMES[a.kind]||[];
+    names.forEach(nm=>{
+      const p=worldPoint(a,clip,t,nm); if(!p)return;
+      const pr=project(p,cam);
+      out.push({name:(a.title||a.id)+' '+nm.replace(/_/g,' '),
+                p:p,g:g2(pr),depth:pr[2],actor:a.id,point:nm});
+    });
+  });
+  const s=(clip.stage||{}).screen;
+  if(s){const pr=project(s.center,cam);
+    out.push({name:'the screen',p:s.center,g:g2(pr),depth:pr[2],
+              actor:'screen',point:'center'});}
+  return out;
+}
+function actorTag(a,clip,t,cam){
+  const at=actorAt(a,clip,t,0);
+  const top=[at[0],at[1]+(a.kind==='skeleton'?1.85:a.kind==='lineform'?1.7:0.16),at[2]];
+  const pr=project(top,cam); if(pr[2]<0.35)return;
+  const q=pxOf(top,cam);
+  const name=(a.title||'')+(a.title?' — ':'')+(PANE_LABEL[a.kind]||a.kind)
+            +(a.bind?' (bound)':'');
+  ctx.font='11px "IBM Plex Mono", monospace';
+  const w=ctx.measureText(name).width+10;
+  if(q[1]<12||q[0]<0||q[0]>cv.width)return;
+  ctx.strokeStyle='rgba(20,20,18,.18)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(q[0],q[1]+2);ctx.lineTo(q[0],q[1]-6);ctx.stroke();
+  ctx.fillStyle='rgba(253,253,248,.88)';ctx.fillRect(q[0]-w/2,q[1]-22,w,15);
+  ctx.fillStyle='#8A9086';ctx.textAlign='center';
+  ctx.fillText(name,q[0],q[1]-11);ctx.textAlign='left';
+}
+function drawWorldClip(clip,t){
+  const cam=liveCam(clip,t); WORLD_CAM=cam; WORLD_HUD.length=0;
+  const st=clip.stage||{};
+  if(st.ground)drawGround(st.ground,cam);
+
+  /* Back to front, so the body can stand in front of the footage and the
+     chain can pass behind the arm it is wrapped around. */
+  const items=[];
+  if(st.screen)items.push({d:project(st.screen.center,cam)[2],
+                           draw:()=>drawScreen(st.screen,cam,t)});
+  (clip.actors||[]).forEach(a=>items.push(
+    {d:project(actorAt(a,clip,t,0),cam)[2],draw:()=>drawActor(a,clip,t,cam)}));
+  items.sort((x,y)=>y.d-x.d).forEach(i=>{try{i.draw();}catch(e){}});
+
+  (clip.actors||[]).forEach(a=>{try{actorTag(a,clip,t,cam);}catch(e){}});
+  WORLD_ANCHORS=worldAnchors(clip,t,cam);
+
+  const lines=[`shot: ${WORLD_SHOT||'wide'}`];
+  WORLD_HUD.forEach(h=>{if(h.lines[0])lines.push(h.lines[0]);});
+  lines.push(`camera yaw ${cam.yaw.toFixed(2)} pitch ${cam.pitch.toFixed(2)} `
+            +`dist ${cam.dist.toFixed(2)}m`);
+  lines.push(`${(clip.actors||[]).length} rigs in one room — drag to orbit, `
+            +`wheel to zoom, double-click to reset`);
+  drawHud(lines,'#7A5AD6');
+}
+
+/* --- annotations that survive the camera ---------------------------------
+   A stroke is a 2D polyline on the 50x50 grid, which is fine while the
+   camera is nailed down. In a room it would slide off whatever it was
+   circling the moment the shot changed. So each stroke is bound once to the
+   nearest anchor point IN THE ROOM, and thereafter it is drawn relative to
+   where that point currently projects, scaled by how much closer the camera
+   has come. Circle the wrist, orbit 90 degrees, the circle is still on the
+   wrist. */
+function bindAnnos(){
+  player.annosBound=true;
+  const pool=player.annoAnchors&&player.annoAnchors.length
+    ?player.annoAnchors:WORLD_ANCHORS;
+  player.annoAnchors=null;
+  if(!worldOn())return;
+  for(const it of player.annos){
+    if(!it.pl.length)continue;
+    let cx=0,cy=0;
+    it.pl.forEach(p=>{cx+=p[0];cy+=p[1];});
+    cx/=it.pl.length; cy/=it.pl.length;
+    let best=null,bd=1e9;
+    for(const a of pool){
+      const d=Math.hypot(a.g[0]-cx,a.g[1]-cy);
+      if(d<bd){bd=d;best=a;}
+    }
+    if(best&&bd<28){
+      it.aP=best.p; it.aG=best.g.slice(); it.aD=best.depth; it.aName=best.name;
+      /* an anchor that belongs to an actor is followed LIVE, so circling a
+         wrist circles the wrist for the rest of the chapter rather than the
+         patch of air the wrist happened to be in */
+      if(best.actor&&best.actor!=='screen')
+        it.aRef={actor:best.actor,point:best.point};
+    }
+  }
+}
+function annoPts(it){
+  if(!it.aP||!worldOn()||!WORLD_CAM)return it.pl;
+  let p=it.aP;
+  if(it.aRef){
+    const clip=player.clip, t=Math.min(player.elapsed/1000,clip.seconds-1e-3);
+    const a=actorOf(clip,it.aRef.actor);
+    if(a){const q=worldPoint(a,clip,t,it.aRef.point); if(q)p=q;}
+  }
+  const pr=project(p,WORLD_CAM), g=g2(pr);
+  const k=clampf(it.aD/Math.max(pr[2],0.05),0.2,5);
+  return it.pl.map(p=>[g[0]+(p[0]-it.aG[0])*k,g[1]+(p[1]-it.aG[1])*k]);
+}
+
+/* ============ pausable player + one render loop owns the canvas ============ */
+const player={
+  els:[], nSteps:1, stepMs:1, drawMs:1, holdMs:0, elapsed:0, last:0,
+  paused:false, active:false, onDone:null, cancelRequested:false,
+  annos:[], annoBudget:0, annoTotal:0, annoActive:false, annoOnDone:null,
+  annosBound:false, annoAnchors:null,
+  annoAt:1e9, announced:new Set(), sceneIdx:-1, videoEl:null, imgEl:null,
+  clip:null
+};
+function clearBoard(){ctx.fillStyle="#FDFDF8";ctx.fillRect(0,0,cv.width,cv.height);}
+function drawPolyline(pl,upto,color,lw,halo){
+  const pass=(c,w)=>{ctx.strokeStyle=c;ctx.lineWidth=w;ctx.lineCap="round";ctx.lineJoin="round";
+    ctx.beginPath();
+    for(let i=0;i<upto;i++){const p=pl[i];
+      i?ctx.lineTo(sx(p[0]),sy(p[1])):ctx.moveTo(sx(p[0]),sy(p[1]));}
+    ctx.stroke();};
+  if(halo)pass("rgba(253,253,248,.92)",lw+4);
+  pass(color,lw);
+}
+function drawCover(src,vw,vh,zoom){
+  const s=Math.max(cv.width/vw,cv.height/vh)*zoom;
+  const w=vw*s,h=vh*s;
+  ctx.drawImage(src,(cv.width-w)/2,(cv.height-h)/2,w,h);
+}
+function drawMediaFrame(){
+  const v=player.videoEl;
+  if(v&&v.readyState>=2){drawCover(v,v.videoWidth||16,v.videoHeight||9,1);return true;}
+  const im=player.imgEl;
+  if(im&&im.complete&&im.naturalWidth){
+    const span=Math.max(player.drawMs+player.holdMs,1);
+    const k=reducedMotion()?0:Math.min(player.elapsed/span,1);
+    drawCover(im,im.naturalWidth,im.naturalHeight,1+0.07*k);
+    return true;
+  }
+  return false;
+}
+function drawCaption(){
+  if(!captionText)return;
+  if(player.videoEl||player.imgEl){ctx.fillStyle="rgba(253,253,248,.85)";
+    ctx.fillRect(0,cv.height-CAP_H,cv.width-130,CAP_H);}
+  ctx.font='22px "Caveat", cursive';
+  ctx.fillStyle=captionQA?"#C93A2E":"#141412";
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  const maxW=cv.width-160, words=captionText.split(/\s+/), lines=[];let cur="";
+  for(const w of words){
+    const t=cur?cur+" "+w:w;
+    if(ctx.measureText(t).width>maxW&&cur){lines.push(cur);cur=w;}else cur=t;
+  }
+  if(cur)lines.push(cur);
+  lines.slice(-2).forEach((ln,i)=>ctx.fillText(ln,16,cv.height-CAP_H+26+i*26));
+}
+function drawAvatar(now){
+  /* live tutor is the CSS/SVG overlay; this twin exists so the recorded .webm
+     still has a face in it — same lipsync state, one source of truth */
+  if(!recorder)return;
+  const x=cv.width-62, y=cv.height-62, r=40;
+  ctx.strokeStyle=captionQA&&speaking?"#C93A2E":"#141412";
+  ctx.fillStyle="#FDFDF8"; ctx.lineWidth=2.6; ctx.lineCap="round";
+  ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();ctx.stroke();
+  const blink=(now%3400)<140;
+  ctx.beginPath();
+  if(blink){ctx.moveTo(x-16,y-10);ctx.lineTo(x-8,y-10);ctx.moveTo(x+8,y-10);ctx.lineTo(x+16,y-10);}
+  else{ctx.arc(x-12,y-10,2.6,0,7);ctx.arc(x+12,y-10,2.6,0,7);}
+  ctx.stroke();
+  const open=Math.max(1.4,mouthNow[0]*10), wide=10*mouthNow[1];
+  ctx.beginPath();ctx.ellipse(x,y+14,wide,open,0,0,7);ctx.stroke();
+  ctx.font='15px "Caveat", cursive';ctx.fillStyle="#8A9086";ctx.textAlign="center";
+  ctx.fillText("tutor",x,y+r+16);
+}
+function stepOf(elapsed){return Math.min(player.nSteps-1,Math.floor(elapsed/player.stepMs));}
+function renderBeats(){
+  const cur=stepOf(player.elapsed);
+  const box=$('beats');
+  if(box.children.length!==player.nSteps||!player.els.length){
+    box.innerHTML=player.els.length
+      ?Array.from({length:player.nSteps},()=>'<i class="beat"></i>').join(""):"";
+  }
+  [...box.children].forEach((el,i)=>{
+    el.className='beat'+(i===cur?' on':i<cur?' past':'');
+  });
+}
+function render(now){
+  clearBoard();
+  /* Coaching owns the whole board: the rig on one side, the student's camera
+     on the other. There is no chapter playing underneath it to draw. */
+  if(COACH.on){
+    try{coachRender(now);}catch(e){COACH.err=""+(e.message||e);}
+    drawCaption(); drawAvatar(now); return;
+  }
+  /* In a room the generated clip is a surface inside the scene, not a
+     backdrop behind it, so the full-frame draw is skipped and drawScreen
+     paints the same <video> element onto the quad instead. */
+  const onMedia=worldOn()?false:drawMediaFrame();
+  if(player.clip){
+    /* clips are shorter than the chapter as often as not, so hold the last
+       frame rather than looping a gesture back to its start mid-sentence */
+    const t=Math.min(player.elapsed/1000,player.clip.seconds-1e-3);
+    try{
+      const k=player.clip.kind;
+      if(k==='world')drawWorldClip(player.clip,t);
+      else if(k==='compose')drawComposeClip(player.clip,t);
+      else if(k==='lineform')drawLineformClip(player.clip,t);
+      else if(k==='hand')drawHandClip(player.clip,t);
+      else drawSkeleton(player.clip,t);
+    }catch(e){player.clip=null;}     /* never let a bad clip kill the loop */
+  }
+  /* reveal each beat's elements in turn; nothing is ever drawn stroke-by-stroke */
+  for(const e of player.els){
+    const t0=e.step*player.stepMs+e.order*STAGGER_MS;
+    e._p=Math.max(0,Math.min((player.elapsed-t0)/ENTER_MS,1));
+    if(reducedMotion()&&player.elapsed>=t0)e._p=1;
+    drawEl(e,now,onMedia);
+  }
+  let nib=null,aUsed=0;
+  if(player.annos.length&&!player.annosBound&&WORLD_ANCHORS.length)bindAnnos();
+  for(const it of player.annos){
+    const pl=annoPts(it);
+    const take=Math.max(0,Math.min(Math.floor(player.annoBudget-aUsed),pl.length));
+    aUsed+=pl.length;
+    if(take>=2)drawPolyline(pl,take,"#C93A2E",3.4,true);
+    if(player.annoActive&&take>0&&take<pl.length){nib=pl[take-1];break;}
+  }
+  if(nib&&player.annoActive){
+    ctx.fillStyle="#C93A2E";
+    ctx.beginPath();ctx.arc(sx(nib[0]),sy(nib[1]),5,0,7);ctx.fill();
+  }
+  drawCaption(); drawAvatar(now); renderBeats();
+}
+function fmt(s){s=Math.max(0,Math.round(s));return (s/60|0)+":"+String(s%60).padStart(2,"0");}
+function updateChrome(){
+  let done=0;
+  for(let i=0;i<scenes.length;i++){
+    const seg=$('timeline').children[i]; if(!seg)continue;
+    const fill=seg.firstChild;
+    if(i<player.sceneIdx)fill.style.width="100%",done+=scenes[i].seconds||8;
+    else if(i===player.sceneIdx){
+      const f=player.active||player.paused?Math.min(player.elapsed/(player.drawMs+player.holdMs),1):(lessonRunning?0:1);
+      fill.style.width=(f*100)+"%"; done+=f*(scenes[i].seconds||8);
+    } else fill.style.width="0%";
+  }
+  const total=scenes.reduce((s,x)=>s+(x.seconds||8),0);
+  $('timeMeta').textContent=fmt(done)+" / "+fmt(total);
+}
+function loop(now){
+  const dt=Math.min(now-(player.last||now),100); player.last=now;
+  if(player.active&&!player.paused){
+    player.elapsed+=dt;
+    /* annotations land once the animation has built up enough to point at */
+    if(!player.annoActive&&player.annos.length&&player.elapsed>=player.annoAt){
+      player.annoAt=1e9; player.annoActive=true;
+    }
+    if(player.cancelRequested||player.elapsed>=player.drawMs+player.holdMs){
+      player.cancelRequested=false; player.active=false;
+      const cb=player.onDone; player.onDone=null; cb&&cb();
+    }
+  }
+  if(player.annoActive&&!player.paused){
+    /* fast reveal — a marker stroke, not a slow live drawing */
+    player.annoBudget+=dt*0.30*Math.max(player.annoTotal/40,1);
+    if(player.annoBudget>=player.annoTotal){
+      player.annoActive=false; const cb=player.annoOnDone; player.annoOnDone=null; cb&&cb();
+    }
+  }
+  if(COACH.on){try{coachTick(now);}catch(e){COACH.err=""+(e.message||e);}}
+  lipTick(now); avatarState();
+  render(now); updateChrome();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(t=>{player.last=t;loop(t);});
+
+/* --- the student's hands on the camera -----------------------------------
+   Only while a room is on screen: everywhere else the board is a flat
+   drawing and a drag should do nothing. The drag is an OFFSET on top of the
+   director's shot, not a replacement, so the lesson keeps cutting and the
+   student keeps their angle. */
+(()=>{
+  let drag=null;
+  cv.addEventListener('pointerdown',e=>{
+    if(!worldOn())return;
+    drag={x:e.clientX,y:e.clientY}; QCAM.on=false;   /* taking it back */
+    try{cv.setPointerCapture(e.pointerId);}catch(_){}
+    cv.style.cursor='grabbing';
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!drag)return;
+    VIEW.dyaw+=(e.clientX-drag.x)*0.0065;
+    VIEW.dpitch=clampf(VIEW.dpitch+(e.clientY-drag.y)*0.004,-0.7,0.9);
+    VIEW.on=true; drag={x:e.clientX,y:e.clientY};
+  });
+  const up=e=>{if(!drag)return;drag=null;
+    cv.style.cursor=worldOn()?'grab':'';
+    try{cv.releasePointerCapture(e.pointerId);}catch(_){}};
+  cv.addEventListener('pointerup',up);
+  cv.addEventListener('pointercancel',up);
+  cv.addEventListener('wheel',e=>{
+    if(!worldOn())return;
+    e.preventDefault();
+    VIEW.dist=clampf(VIEW.dist*(1+e.deltaY*0.0012),0.3,3.5); VIEW.on=true;
+  },{passive:false});
+  cv.addEventListener('dblclick',()=>{if(worldOn())resetView();});
+})();
+
+function wipe(){
+  const f=$('fx');
+  f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+}
+/* --- footage cut to the steps -------------------------------------------
+   One clip per chapter is the wrong unit for a room: the rig is performing
+   step 3 while the screen behind it plays a clip of the whole job. A reel is
+   a list of cues keyed to the SAME segment boundaries the rig is animating
+   from, so the footage on the screen is footage of the step being performed
+   in front of it. Each cue owns a <video> element, preloaded; only the
+   active one is playing. */
+const REEL={cues:[],els:new Map(),idx:-1};
+function setReel(cues){
+  REEL.els.forEach(v=>{v.pause();v.src="";});
+  REEL.els.clear(); REEL.cues=cues&&cues.length?cues:[]; REEL.idx=-1;
+  REEL.cues.forEach(c=>{
+    if(!c.url||REEL.els.has(c.url))return;
+    const v=document.createElement('video');
+    v.crossOrigin="anonymous";v.muted=true;v.loop=true;v.playsInline=true;
+    v.preload="auto"; v.src=MEDIA(c.url);
+    REEL.els.set(c.url,v);
+  });
+}
+function reelAt(t){
+  if(!REEL.cues.length)return null;
+  let i=-1;
+  for(let k=0;k<REEL.cues.length;k++){
+    const c=REEL.cues[k];
+    if(t>=c.start&&t<c.end){i=k;break;}
+    if(t>=c.start)i=k;            /* past the last cue: hold it, do not go dark */
+  }
+  if(i<0)return null;
+  const cue=REEL.cues[i], v=REEL.els.get(cue.url);
+  if(i!==REEL.idx){               /* the cut */
+    REEL.idx=i;
+    REEL.els.forEach((el,url)=>{if(url!==cue.url)el.pause();});
+    if(v){try{v.currentTime=0;}catch(_){ } v.play().catch(()=>{});}
+  }
+  return {el:(v&&v.readyState>=2)?v:null,cue:cue};
+}
+function setSceneMedia(videoUrl,imgUrl){
+  if(player.videoEl){player.videoEl.pause();player.videoEl.src="";player.videoEl=null;}
+  player.imgEl=null;
+  if(videoUrl){
+    const v=document.createElement('video');
+    v.crossOrigin="anonymous";v.muted=true;v.loop=true;v.playsInline=true;
+    v.src=MEDIA(videoUrl);v.play().catch(()=>{});
+    player.videoEl=v;
+  }else if(imgUrl){
+    const im=new Image(); im.crossOrigin="anonymous"; im.src=MEDIA(imgUrl);
+    player.imgEl=im;
+  }
+}
+function playScene(sc,ms){
+  return new Promise(res=>{
+    setSceneMedia(sc.videoUrl||null,sc.imageUrl||null);
+    setReel(sc.reel||null);
+    player.clip=sc.clip||null;
+    /* a new room starts on the director's camera, and the board only eats
+       drag gestures while there is a room to orbit */
+    resetView(); WORLD_ANCHORS=[]; WORLD_CAM=null;
+    cv.style.touchAction=player.clip&&player.clip.kind==='world'?'none':'';
+    cv.style.cursor=player.clip&&player.clip.kind==='world'?'grab':'';
+    const reduced=reducedMotion();
+    player.els=sc.els||[];
+    player.nSteps=Math.max(1,(sc.steps||[]).length||1);
+    player.drawMs=reduced?900:ms*0.86; player.holdMs=reduced?400:ms*0.14;
+    player.stepMs=player.drawMs/player.nSteps;
+    player.elapsed=0; player.paused=false; player.active=true;
+    player.annos=sc.annos?strokesToItems(sc.annos,0.12):[];
+    player.annosBound=false;
+    player.annoTotal=player.annos.reduce((s,i)=>s+i.pl.length,0);
+    player.annoBudget=0; player.annoActive=false;
+    player.annoAt=player.annos.length?player.drawMs*0.62:1e9;
+    player.announced=new Set(); player.onDone=res;
+  });
+}
+function playAnnotations(strokes,anchorSnap){
+  return new Promise(res=>{
+    if(!strokes.length)return res();
+    player.annos=strokesToItems(strokes,0.12);
+    /* bind against the room as it was when the model SAW it, so a stroke
+       still finds its wrist even if the camera has since moved */
+    player.annoAnchors=anchorSnap||null;
+    player.annosBound=false;
+    player.annoTotal=player.annos.reduce((s,i)=>s+i.pl.length,0);
+    player.annoBudget=0; player.annoActive=true; player.annoAt=1e9; player.annoOnDone=res;
+  });
+}
+
+/* ============ lipsync ============
+   speechSynthesis gives word boundaries, not phonemes. Each spoken word is
+   expanded into a viseme sequence from its letters and stepped through over the
+   word's estimated duration; the CSS transition on .mouth tweens between them. */
+const VIS={
+  rest:[.10,.90], A:[1.00,.95], E:[.55,1.18], I:[.42,1.10], O:[.95,.62],
+  U:[.62,.50], M:[.05,.86], F:[.26,.98], L:[.50,.86], S:[.24,1.06],
+  R:[.44,.78], T:[.30,1.00], K:[.40,.92]
+};
+let mouthNow=VIS.rest;
+function setMouth(v){
+  mouthNow=VIS[v]||VIS.rest;
+  const a=$('avatar');
+  a.style.setProperty('--mo',mouthNow[0]);
+  a.style.setProperty('--mw',mouthNow[1]);
+}
+function visemeOf(c){
+  if("aeiouy".includes(c)){
+    if(c==="a")return"A"; if(c==="e")return"E";
+    if(c==="i"||c==="y")return"I"; if(c==="o")return"O"; return"U";
+  }
+  if("mbp".includes(c))return"M";
+  if("fv".includes(c))return"F";
+  if(c==="l")return"L";
+  if("szxc".includes(c))return"S";
+  if(c==="r")return"R";
+  if("tdnh".includes(c))return"T";
+  if("kgqjw".includes(c))return"K";
+  return null;
+}
+function visemesFor(word){
+  const out=[]; let prev=null;
+  for(const c of word.toLowerCase()){
+    const v=visemeOf(c);
+    if(!v||v===prev)continue;
+    out.push(v); prev=v;
+  }
+  return out.length?out:["rest"];
+}
+const lip={seq:["rest"],i:0,next:0,per:90,on:false};
+function lipSay(word,durMs){
+  if(reducedMotion())return;
+  const s=visemesFor(word);
+  lip.seq=s; lip.i=0; lip.per=Math.max(55,durMs/s.length); lip.next=0; lip.on=true;
+}
+function lipRun(text,durMs){
+  if(reducedMotion())return;
+  const s=[]; text.split(/\s+/).filter(Boolean).forEach(w=>{s.push(...visemesFor(w));s.push("rest");});
+  lip.seq=s.length?s:["rest"]; lip.i=0;
+  lip.per=Math.max(55,durMs/lip.seq.length); lip.next=0; lip.on=true;
+}
+function lipStop(){lip.on=false;lip.i=0;lip.seq=["rest"];setMouth("rest");}
+function lipTick(now){
+  if(!lip.on)return;
+  if(now>=lip.next){
+    if(lip.i>=lip.seq.length){lip.on=false;setMouth("rest");return;}
+    setMouth(lip.seq[lip.i++]); lip.next=now+lip.per;
+  }
+}
+function avatarState(){
+  const a=$('avatar');
+  a.classList.toggle('qa',captionQA);
+  a.classList.toggle('think',answering&&!speaking);
+  /* while coaching, the bottom-right corner is the score readout — and the
+     student's own body is the face worth looking at, not the cartoon's */
+  a.classList.toggle('rec-hidden',!!recorder||COACH.on);
+}
+function speak(text,qa){
+  return new Promise(res=>{
+    /* A chapter with no narration is legal JSON and the model does emit one
+       occasionally. This used to throw inside an un-awaited promise, which
+       in a browser is a silent unhandled rejection — the lesson simply
+       stopped with nothing on screen to say why. */
+    text=(text==null?"":String(text)).trim();
+    captionText=text; captionQA=!!qa;
+    const off=()=>{speaking=false;lipStop();res();};
+    if(!text){off();return;}
+    const estMs=900+text.split(/\s+/).length*300;
+    if(!voiceOn||!('speechSynthesis'in window)){
+      speaking=true; lipRun(text,estMs); setTimeout(off,estMs); return;
+    }
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text); u.rate=1.0;
+    u.lang=speechLang();                 /* an id-ID voice if one is installed */
+    const v=pickVoice(u.lang); if(v)u.voice=v;
+    let sawBoundary=false;
+    u.onstart=()=>{
+      speaking=true;
+      setTimeout(()=>{if(speaking&&!sawBoundary)lipRun(text,estMs);},650);
+    };
+    u.onboundary=e=>{
+      if(e.name&&e.name!=="word")return;
+      sawBoundary=true;
+      const w=(text.slice(e.charIndex).match(/^\S+/)||[""])[0];
+      if(w)lipSay(w,Math.max(160,w.length*72/(u.rate||1)));
+    };
+    u.onend=off; u.onerror=off;
+    speechSynthesis.speak(u);
+  });
+}
+function chatMsg(cls,html){
+  const d=document.createElement('div');d.className='msg '+cls;d.innerHTML=html;
+  $('chat').appendChild(d);$('chat').scrollTop=1e6;
+}
+
+/* ============ interrupt / conversation / agentic new scenes ============ */
+let interrupted=false, answering=false, lessonRunning=false, currentScene=-1, pendingSeek=null;
+function setBadge(mode){
+  $('badge').className='badge'+(mode?' '+mode:'');
+  $('badge').textContent=mode==='paused'?'Paused — answering'
+                        :mode==='coach'?'Coaching — camera on':'Live';
+}
+function clipContextFor(c,t,v,bare){
+  /* Where the moving parts are, in grid coordinates, so an interrupt can be
+     annotated onto the actual wrist instead of near it. Without this the
+     skeleton is something the model is told about but cannot point at.
+     `v` is the pane viewport when this clip is one panel of a composite —
+     landmarks are then reported in board coordinates, so a stroke aimed at
+     the hand pane lands on the hand pane. */
+  if(!c)return [];
+  t=Math.min(t==null?c.seconds*0.5:t,c.seconds-1e-3);
+  if(c.kind==='compose'){
+    const out=[];
+    (c.parts||[]).forEach((p,i)=>{
+      const pv=vpFor((c.layout&&c.layout[i])||[0,0,1,1]);
+      const lbl=PANE_LABEL[p.kind]||p.kind;
+      clipContextFor(p,t,pv).forEach(s=>out.push(`[${lbl} pane] ${s}`));
+    });
+    out.push(`the board is split into ${(c.parts||[]).length} panes: `
+            +(c.parts||[]).map(p=>PANE_LABEL[p.kind]||p.kind).join(', ')
+            +' — all playing on one timeline');
+    return out;
+  }
+  if(c.kind==='world')return worldContext(c,t);
+  const fi=Math.max(0,Math.min(c.frames.length-1,Math.floor(t*c.fps)));
+  const G=p=>{const g=g2(project(p,c.camera));return v?paneToBoard(v,g):g;};
+  const parts=[];
+  /* `bare` drops this clip's own 2D coordinates: inside a room they are
+     coordinates in a camera that is not the one filming it. The room
+     reports its own, from where things actually are. */
+  if(c.kind==='lineform'){
+    const pts=c.frames[fi], ends=[[pts[0],'chain base'],[pts[pts.length-1],'chain tip'],
+                                  [pts[pts.length>>1],'chain middle']];
+    if(!bare)ends.forEach(([p,nm])=>{const g=G(p);
+      parts.push(`${nm} (around x${Math.round(g[0])}y${Math.round(g[1])})`);});
+    const seg=c.segment?c.segment[fi]:0;
+    parts.push(`the chain is holding the "${(c.labels&&c.labels[seg])||'curve'}" shape`);
+    return parts;
+  }
+  if(c.kind==='hand'){
+    const HI={}; c.landmarks.forEach((nm,i)=>HI[nm]=i);
+    if(!bare)['thumb_tip','index_tip','middle_tip','wrist'].forEach(nm=>{
+      const g=G(c.frames[fi][HI[nm]]);
+      parts.push(`the ${nm.replace('_',' ')} `
+                +`(around x${Math.round(g[0])}y${Math.round(g[1])})`);});
+    const hg=(c.gestures||[]).find(g=>t>=g.start&&t<g.end);
+    if(hg)parts.push(`the hand is making a "${hg.name}" gesture `
+                    +`(confidence ${hg.conf})`);
+    const hs=(c.segments||[]).find(s=>t>=s.start&&t<s.end);
+    if(hs)parts.push(`the repair step being demonstrated is "${hs.text}"`);
+    if(c.curls)parts.push('finger curl 0=straight 1=closed: '
+      +c.fingers.map((f,i)=>`${f} ${c.curls[fi][i]}`).join(', '));
+    return parts;
+  }
+  const JI={}; c.joints.forEach((nm,i)=>JI[nm]=i);
+  if(!bare)['wrist_r','wrist_l','elbow_r','nose','hip_r'].forEach(nm=>{
+    const g=G(c.frames[fi][JI[nm]]);
+    parts.push(`${nm.replace('_r',' (right)').replace('_l',' (left)')} `
+              +`(around x${Math.round(g[0])}y${Math.round(g[1])})`);
+  });
+  const ges=(c.gestures||[]).find(g=>t>=g.start&&t<g.end);
+  if(ges)parts.push(`the tracked gesture right now is "${ges.name}" with the `
+                   +`${ges.hand} hand, confidence ${ges.conf}`);
+  const seg=(c.segments||[]).find(s=>t>=s.start&&t<s.end);
+  if(seg)parts.push(`the step being demonstrated is "${seg.text}"`);
+  return parts;
+}
+function worldContext(c,t){
+  /* Where everything IS, in the room and on the board at once: the grid
+     coordinate so a stroke can land on it, and the metres so the tutor can
+     talk about distance and decide the camera needs to move. */
+  /* The live camera only describes the room that is actually on screen. Asked
+     about a chapter that has not played yet — which is what the annotator
+     does while prefetching — solve that chapter's own camera instead, and put
+     the playing scene's shot label back so the HUD does not flicker. */
+  const live=(player.clip===c)&&WORLD_CAM;
+  const keep=WORLD_SHOT;
+  const cam=live?WORLD_CAM:camAt(c,t);
+  const shot=WORLD_SHOT||'wide';
+  if(!live)WORLD_SHOT=keep;
+  const anchors=worldAnchors(c,t,cam);
+  const out=anchors.map(a=>`${a.name} (around x${Math.round(a.g[0])}`
+    +`y${Math.round(a.g[1])}, ${a.depth.toFixed(1)}m from camera)`);
+  (c.actors||[]).forEach(a=>{
+    clipContextFor(a.clip,Math.min(t,a.clip.seconds-1e-3),null,true)
+      .forEach(s=>out.push(`[${a.title||a.id}] ${s}`));
+    if(a.bind)out.push(`the ${a.kind} "${a.id}" is bound to `
+      +`${a.bind.actor}'s ${a.bind.point.replace(/_/g,' ')}, so it moves with it`);
+  });
+  if((c.stage||{}).screen){
+    const cue=REEL.cues.length?reelAt(t):null;
+    out.push(`a ${c.stage.screen.w}m screen hangs on the back wall of the room`
+      +(cue&&cue.el?`, playing generated footage of "${cue.cue.text}" — the `
+                    +`same step the rig is performing`
+       :cue?`, with no clip for "${cue.cue.text}"`
+       :player.videoEl?' playing the generated footage':' with no clip on it'));
+  }
+  out.push(`this is ONE 3D room filmed by ONE camera, currently the `
+          +`"${shot}" shot at ${cam.dist.toFixed(1)}m`);
+  out.push(`you can move that camera yourself with <camera> — targets you can `
+          +`name: ${anchors.map(a=>`"${a.name}"`).join(', ')}`);
+  return out;
+}
+const clipContext=()=>player.clip
+  ?clipContextFor(player.clip,player.elapsed/1000):[];
+function boardContext(){
+  /* what is actually on screen right now, so the tutor points at real things */
+  if(COACH.on)return coachContext().join(", ");
+  const cur=stepOf(player.elapsed), parts=[];
+  for(const e of player.els){
+    if(e.step>cur||e._p<=0)continue;
+    const [ax,ay]=elAnchor(e);
+    const name=e.label||e.text;
+    if(name)parts.push(`${name} (around x${Math.round(ax)}y${Math.round(ay)})`);
+  }
+  parts.push(...clipContext());
+  return parts.length?parts.join(", "):"nothing on the board yet";
+}
+/* --- the tutor moving the camera as part of an answer --------------------
+   "show me that from the side" is a question about where the student is
+   standing, not about the subject. In a room it has an answer: move. The
+   move is absolute — it overrides the director's shot and the student's own
+   drag — and it holds until the chapter changes or the student grabs the
+   camera back. */
+function moveCamera(spec){
+  if(!worldOn()||!spec||typeof spec!=='object')return null;
+  const clip=player.clip, t=Math.min(player.elapsed/1000,clip.seconds-1e-3);
+  const from=liveCam(clip,t);
+  let base=from;
+  if(spec.shot){
+    const s=(clip.shots||[]).find(x=>x.label===String(spec.shot).toLowerCase());
+    if(s)base=shotCam(s,clip,t);
+  }
+  let target=base.target;
+  if(Array.isArray(spec.target)&&spec.target.length>=3)
+    target=spec.target.slice(0,3).map(Number);
+  else if(typeof spec.target==='string'&&spec.target.trim()){
+    const q=' '+spec.target.toLowerCase()+' ';
+    const pool=WORLD_ANCHORS.length?WORLD_ANCHORS:worldAnchors(clip,t,from);
+    let best=null,bs=0;
+    pool.forEach(a=>{
+      const s=a.name.toLowerCase().split(/\W+/)
+        .filter(w=>w.length>2&&q.includes(w)).length;
+      if(s>bs){bs=s;best=a;}
+    });
+    /* an anchor on an actor is followed live, so a close shot of a moving
+       wrist tracks the wrist instead of the spot it used to be */
+    if(best)target=best.actor==='screen'?best.p:{actor:best.actor,point:best.point};
+  }
+  const n=(v,d)=>{const x=parseFloat(v);return isFinite(x)?x:d;};
+  QCAM.from=from;
+  QCAM.to={yaw:n(spec.yaw,base.yaw),
+           pitch:clampf(n(spec.pitch,base.pitch),-0.6,1.1),
+           dist:clampf(n(spec.dist,base.dist),0.3,9),
+           fov:base.fov,target:target};
+  QCAM.ms=clampf(n(spec.seconds,1.3)*1000,300,4000);
+  QCAM.label=String(spec.label||spec.shot||'tutor camera').slice(0,40);
+  QCAM.t0=performance.now(); QCAM.on=true;
+  VIEW.dyaw=VIEW.dpitch=0; VIEW.dist=1; VIEW.on=false;
+  return QCAM.label;
+}
+function pauseLesson(){
+  if(player.paused)return;
+  player.paused=true; interrupted=true;
+  if(player.videoEl)player.videoEl.pause();
+  REEL.els.forEach(v=>v.pause());        /* freeze the step clip too */
+  if('speechSynthesis'in window)speechSynthesis.cancel();
+  speaking=false; lipStop(); setBadge('paused'); $('pauseBtn').textContent='Resume';
+}
+function resumeLesson(){
+  player.paused=false; interrupted=false;
+  if(player.videoEl&&lessonRunning)player.videoEl.play().catch(()=>{});
+  REEL.idx=-1;                  /* next frame re-cues the step clip and plays it */
+  setBadge(COACH.on?'coach':lessonRunning?'live':''); $('pauseBtn').textContent='Pause';
+  if(COACH.on){captionText=COACH.ref.steps[COACH.step].text;captionQA=false;}
+  if(lessonRunning&&scenes[currentScene]){
+    captionText=scenes[currentScene].narration; captionQA=false;
+  }
+}
+async function handleQuestion(){
+  const q=$('q').value.trim();
+  if(!q||answering)return;
+  /* mid-coaching there are no chapters, but there is very much something to
+     ask about — the pose the student is holding right now */
+  if(!scenes.length&&!COACH.on){$('status').textContent="Start a lesson first";$('status').className='status err';return;}
+  answering=true; $('ask').disabled=true; $('q').value="";
+  pauseLesson();
+  chatMsg('you',q);
+  $('status').textContent="Tutor is thinking"; $('status').className='status busy';
+  try{
+    const sc=scenes[Math.max(currentScene,0)]||scenes[scenes.length-1]||{};
+    let hive="";
+    try{
+      const g=await fetch("/api/graph",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({question:q})});
+      if(g.ok){const gd=await g.json();
+        if(gd.context){hive=gd.context;
+          chatMsg('sys','&#9741; hivemind matched '+ (hive.match(/^## /gm)||[]).length +' how-to(s)');}}
+    }catch(_){}
+    /* mid-coaching there is no chapter to name — what the student is asking
+       about is the step they are physically holding */
+    const where=COACH.on
+      ?`Not playing a chapter: a live coaching session is running, and the `
+       +`student is trying to hold step ${COACH.step+1} of `
+       +`${COACH.ref.steps.length}: "${COACH.ref.steps[COACH.step].text}"`
+      :`Current chapter: "${sc.title||sc.sketch_prompt}" — narration: "${sc.narration}"`;
+    const userMsg=
+`Topic: ${topicNow}
+${where}
+On the board right now: ${boardContext()}
+${hive?`Grounded how-to knowledge from the hivemind (prefer this over your own memory, mention the source titles):
+${hive}
+`:""}Student's question: ${q}`;
+    /* the room exactly as the model is being told about it */
+    const anchorSnap=WORLD_ANCHORS.slice();
+    const raw=await askClaude(QA_SYS+langRule(),userMsg,qaHistory,3000);
+    qaHistory.push({role:"user",content:userMsg},{role:"assistant",content:raw});
+    if(qaHistory.length>12)qaHistory=qaHistory.slice(-12);
+    const am=raw.match(/<answer>([\s\S]*?)<\/answer>/);
+    const answer=am?am[1].trim():raw.replace(/<[^>]+>/g," ").trim();
+    const nm=raw.match(/<new_scene>([\s\S]*?)<\/new_scene>/);
+    const cm=raw.match(/<camera>([\s\S]*?)<\/camera>/);
+    /* the coaching board is a rig and a webcam, not a drawing — a marker
+       stroke aimed at grid coordinates has nothing to land on */
+    const annos=(nm||COACH.on)?[]:parseStrokes(raw);
+    $('status').textContent=""; $('status').className='status';
+    chatMsg('tutor',answer);
+    if(cm){                       /* answer the question by moving, not talking */
+      try{
+        const cs=parseModelJSON(cm[1].trim(),"camera move");
+        const lbl=moveCamera(Array.isArray(cs)?cs[0]:cs);
+        if(lbl)chatMsg('sys','&#9673; camera moved — '+lbl);
+      }catch(e){chatMsg('sys','(camera move was malformed, ignored)');}
+    }
+    const speech=speak(answer,true);
+    await playAnnotations(annos,anchorSnap);
+    for(const a of annos)if(a.label)chatMsg('sys','&#10148; annotated: '+a.label);
+    await speech;
+    if(nm&&COACH.on){
+      chatMsg('sys','(a new chapter was offered — finish coaching to play it, '
+                   +'the camera session would be thrown away)');
+    }else if(nm){
+      try{
+        const p=parseModelJSON(nm[1].trim(),"new scene");
+        const ns=Array.isArray(p)?p[0]:p;
+        /* Valid JSON is not a valid chapter. Without this, a reply that
+           parses to a string or a number sails through: assigning to a
+           primitive's properties is a silent no-op in sloppy mode, so
+           prepScene "succeeds", a modeless scene lands in the timeline, and
+           it plays as a blank board for its full duration. */
+        if(!ns||typeof ns!=="object"||Array.isArray(ns))
+          throw new Error("new scene was not an object");
+        ns.qa=true; ns.fresh=true; prepScene(ns);
+        const at=Math.min(currentScene+1,scenes.length);
+        scenes.splice(at,0,ns);
+        renderSceneList(); renderTimeline();
+        chatMsg('sys','&#43; new chapter added: '+(ns.title||ns.sketch_prompt));
+        if(!lessonRunning){answering=false;$('ask').disabled=false;resumeLesson();runLesson(at);return;}
+        else pendingSeek=at;
+      }catch(e){chatMsg('sys','(new scene was malformed, skipped)');}
+    }
+    await new Promise(r=>setTimeout(r,450));
+  }catch(e){
+    $('status').textContent=e.message;$('status').className='status err';
+  }
+  answering=false; $('ask').disabled=false;
+  resumeLesson();
+  if(pendingSeek!=null&&lessonRunning)player.cancelRequested=true;
+}
+$('ask').onclick=handleQuestion;
+$('q').addEventListener('keydown',e=>{if(e.key==='Enter')handleQuestion();});
+$('pauseBtn').onclick=()=>{player.paused?resumeLesson():pauseLesson();};
+
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(SR){
+  $('mic').style.display='block';
+  const rec=new SR(); rec.lang='en-US'; rec.interimResults=false;
+  let listening=false;
+  rec.onresult=e=>{$('q').value=e.results[0][0].transcript;handleQuestion();};
+  rec.onend=()=>{listening=false;$('mic').setAttribute('aria-pressed','false');};
+  $('mic').onclick=()=>{
+    if(listening){rec.stop();return;}
+    rec.lang=speechLang();          /* listen in whichever language we teach in */
+    pauseLesson(); listening=true;
+    $('mic').setAttribute('aria-pressed','true'); rec.start();
+  };
+}
+
+/* ============ chapters / timeline / seeking ============ */
+const KIND={photo:"still",hybrid:"film",skeleton:"motion",hand:"hands",
+            lineform:"curve",compose:"multi",world:"3D room"};
+const sceneName=s=>s.title||s.sketch_prompt||"chapter";
+function renderSceneList(){
+  $('scenes').innerHTML=scenes.map((s,i)=>
+    `<div class="scene ${i===currentScene?'active':''} ${i<currentScene?'done':''} ${s.qa?'qa':''} ${s.fresh?'fresh':''}"
+          role="button" tabindex="0" data-i="${i}">
+       <span class="n">${i+1}</span><span>${sceneName(s)}</span>
+       ${KIND[s.mode]?`<span class="kind">${KIND[s.mode]}</span>`:""}</div>`).join("");
+  scenes.forEach(s=>{delete s.fresh;});
+  [...$('scenes').children].forEach(el=>{
+    el.onclick=()=>seekTo(+el.dataset.i);
+    el.onkeydown=e=>{if(e.key==='Enter')seekTo(+el.dataset.i);};
+  });
+}
+function renderTimeline(){
+  const total=scenes.reduce((s,x)=>s+(x.seconds||8),0)||1;
+  $('timeline').innerHTML=scenes.map((s,i)=>
+    `<div class="seg ${s.qa?'qa':(s.mode||'')}" style="flex:${(s.seconds||8)/total}" title="${sceneName(s)}" data-i="${i}"><div class="fill"></div></div>`).join("");
+  [...$('timeline').children].forEach(el=>el.onclick=()=>seekTo(+el.dataset.i));
+}
+function seekTo(i){
+  if(answering||!scenes.length)return;
+  pendingSeek=i;
+  if(lessonRunning){resumeLesson();player.cancelRequested=true;}
+  else runLesson(i);
+}
+
+/* ============ lesson pipeline ============ */
+async function waitWhilePaused(){
+  while((player.paused||answering)&&pendingSeek==null)await new Promise(r=>setTimeout(r,200));
+}
+/* There is no such thing as "animation unavailable".
+   The rigs (hand, skeleton, actuated curve) are pure maths on the server —
+   no API key, no diffusion token, no GPU — so a chapter that has lost its
+   authored animation can always still be PERFORMED. The old placeholder box
+   was a lie told whenever the director omitted steps or a clip errored.
+
+   The ladder, best first:
+     1. ask the hivemind what procedure this chapter is about and animate the
+        steps the graph actually knows (grounded, and physics-checked)
+     2. hand the narration straight to the rigs — text_to_hand/text_to_motion
+        parse free text, so any sentence yields real motion
+   Only a rig failure after both can leave the board still, and that has no
+   code path left. */
+async function rescueScene(sc){
+  const q=((sceneName(sc)||"")+" "+(sc.narration||"")).trim();
+  sc.rescued=true;
+  try{
+    const r=await fetch("/api/graph",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({question:q})});
+    const d=await r.json();
+    const node=d.nodes&&d.nodes[0];
+    const steps=(node&&node.steps||[]).map(s=>s.text).filter(Boolean).slice(0,5);
+    /* A weak lexical match is worse than no match: performing a robotic-
+       gripper procedure over a photosynthesis chapter is confidently wrong.
+       Measured separation on this corpus is ~26-37 for a real hit against
+       ~1.7 for noise, so the gate sits well clear of both. */
+    if(steps.length>=2&&node.score>=8){
+      sc.mode="compose"; sc.seconds=sc.seconds||Math.max(10,Math.min(20,steps.length*3));
+      sc.parts=[{kind:"skeleton",title:"posture",steps:steps.slice(0,3)},
+                {kind:"hand",title:"grip",steps:steps.slice(-3)}];
+      chatMsg('sys','&#9683; no animation authored — performing "'+node.title
+             +'" from the hivemind instead ('+steps.length+' steps)');
+      return;
+    }
+  }catch(e){}
+  /* nothing in the graph: the rigs still parse the narration itself */
+  sc.mode="hand"; sc.hand_steps=[]; sc.motion_prompt=q||sceneName(sc)||"explain";
+  sc.seconds=sc.seconds||10;
+  chatMsg('sys','&#9995; no animation authored — performing the narration '
+         +'as hand motion');
+}
+const SCENE_MODES=["anim","hand","skeleton","lineform","compose","world",
+                   "photo","hybrid"];
+function prepScene(sc){
+  /* normalise whatever the director produced into renderable elements.
+     An unrecognised mode used to fall through every branch of coerceMode
+     and play as an empty board, so anything not on this list becomes an
+     animation — which is the one mode that always works. */
+  if(typeof sc.mode!=="string"||SCENE_MODES.indexOf(sc.mode)<0)sc.mode="anim";
+  /* narration is spoken AND captioned, so it has to exist; a chapter the
+     model wrote without one still has a title to fall back on */
+  sc.narration=(typeof sc.narration==="string"&&sc.narration.trim())
+    ?sc.narration.trim()
+    :(sc.title?`Here is ${sc.title}.`:"");
+  /* an "anim" chapter with no elements can still be performed by the rigs —
+     flag it and let ensureMedia rescue it rather than drawing a placeholder */
+  if(sc.mode==="anim"&&(!Array.isArray(sc.steps)||!sc.steps.length)){
+    sc.steps=[]; if(!sc.rescued)sc.needsRescue=true;
+  }
+  sc.els=sc.mode==="anim"?normEls(sc.steps):[];
+  if((sc.mode==="skeleton"||sc.mode==="hand")&&!sc.seconds)
+    sc.seconds=Math.max(8,Math.min(20,((sc.motion_steps||sc.hand_steps||[]).length)*3||10));
+  if((sc.mode==="compose"||sc.mode==="world")&&!sc.seconds){
+    const parts=sc.mode==="world"?worldActors(sc):composeParts(sc);
+    const longest=Math.max(...parts.map(p=>(p.steps||p.shapes||[]).length),0);
+    /* a room needs longer than a pane: the camera has to travel between the
+       things it is cutting to, and a cut every two seconds is unreadable */
+    sc.seconds=sc.mode==="world"?Math.max(12,Math.min(30,longest*4||14))
+                                :Math.max(10,Math.min(24,longest*3||12));
+  }
+  if(!sc.seconds)sc.seconds=Math.max(6,Math.min(16,(sc.steps||[]).length*4||8));
+  return sc;
+}
+function ensureVideo(sc,quiet){
+  /* "world" wants a clip too — not as a backdrop but as the thing playing on
+     the screen standing in the room. No token, and the screen is simply not
+     part of the room. */
+  if(!videoEnabled||(sc.mode!=="hybrid"&&sc.mode!=="world")
+     ||!sc.video_prompt||sc.videoUrl!==undefined
+     ||(sc.mode==="world"&&sc.step_videos))   /* step clips replace the single one */
+    return sc._videoJob||Promise.resolve();
+  if(sc._videoJob)return sc._videoJob;
+  sc._videoJob=(async()=>{
+    try{
+      if(!quiet){$('status').textContent="Generating diffusion clip — 30–90s";$('status').className='status busy';}
+      const r=await fetch("/api/video",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompt:sc.video_prompt})});
+      const d=await r.json();
+      sc.videoUrl=(r.ok&&d.video)?d.video:null;
+      if(sc.videoUrl)chatMsg('sys','&#9635; diffusion clip ready'+(quiet?' (prefetched)':''));
+      else chatMsg('sys','diffusion clip unavailable'+(d.error?' ('+d.error.message+')':''));
+    }catch(e){sc.videoUrl=null;}
+    if(!quiet){$('status').textContent="";$('status').className='status';}
+  })();
+  return sc._videoJob;
+}
+/* --- one clip per step ---------------------------------------------------
+   The cues come out of the SOLVED clip, not out of the director's text, so
+   they land on the exact segment boundaries the rig is animating from: the
+   screen cuts to footage of step 3 on the frame the fingers start step 3. */
+function stepVideoPrompt(text,kind,topic){
+  const shot=kind==='hand'?"Tight macro shot of a pair of real hands"
+                          :"Medium shot of one person, waist up";
+  return `${shot}: ${text}. ${topic?`Context: ${topic}. `:""}`
+        +`Photoreal, natural workshop light, shallow depth of field, one `
+        +`continuous take, camera almost still, no text or captions in frame.`;
+}
+function stepCues(sc){
+  const clip=sc.clip;
+  if(!clip||clip.kind!=='world')return [];
+  const lead=(clip.actors||[]).find(a=>a.kind==='hand')
+           ||(clip.actors||[]).find(a=>a.kind==='skeleton');
+  const segs=(lead&&lead.clip.segments)||[];
+  if(!segs.length)return [];
+  const given=Array.isArray(sc.step_videos)?sc.step_videos:null;
+  const cues=segs.slice(0,4).map((s,i)=>({
+    start:s.start, end:s.end, text:s.text||`step ${i+1}`,
+    prompt:(given&&given[i])||stepVideoPrompt(s.text||sceneName(sc),
+                                              lead.kind,topicNow)}));
+  /* hold the last clip to the end of the chapter rather than going dark */
+  cues[cues.length-1].end=Math.max(cues[cues.length-1].end,clip.seconds);
+  return cues;
+}
+function ensureStepVideos(sc,quiet){
+  if(!videoEnabled||sc.mode!=="world"||!sc.step_videos||sc.reel!==undefined)
+    return sc._reelJob||Promise.resolve();
+  if(sc._reelJob)return sc._reelJob;
+  const cues=stepCues(sc);
+  if(!cues.length){sc.reel=[];return Promise.resolve();}
+  sc._reelJob=(async()=>{
+    try{
+      if(!quiet){
+        $('status').textContent=`Generating ${cues.length} step clips — `
+                               +`30–90s, all at once`;
+        $('status').className='status busy';}
+      const r=await fetch("/api/videos",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompts:cues.map(c=>c.prompt)})});
+      const d=await r.json();
+      const urls=(r.ok&&Array.isArray(d.videos))?d.videos:[];
+      sc.reel=cues.map((c,i)=>({...c,url:urls[i]||null})).filter(c=>c.url);
+      const err=(d.errors||[]).find(Boolean);
+      chatMsg('sys',sc.reel.length
+        ?`&#9635; ${sc.reel.length}/${cues.length} step clips ready — the `
+         +`screen cuts with the steps`+(quiet?' (prefetched)':'')
+        :'step clips unavailable'+(err?' ('+err+')':
+            d.error?' ('+d.error.message+')':''));
+    }catch(e){sc.reel=[];}
+    if(!quiet){$('status').textContent="";$('status').className='status';}
+  })();
+  return sc._reelJob;
+}
+function ensureImage(sc,quiet){
+  /* also the still that hangs on a room's screen when there is no clip */
+  if(!imageEnabled||(sc.mode!=="photo"&&sc.mode!=="world")
+     ||!sc.image_prompt||sc.imageUrl!==undefined)
+    return sc._imageJob||Promise.resolve();
+  if(sc._imageJob)return sc._imageJob;
+  sc._imageJob=(async()=>{
+    try{
+      if(!quiet){$('status').textContent="Generating a still";$('status').className='status busy';}
+      const r=await fetch("/api/image",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prompt:sc.image_prompt})});
+      const d=await r.json();
+      sc.imageUrl=(r.ok&&d.image)?d.image:null;
+      if(sc.imageUrl)chatMsg('sys','&#9707; generated still ready'+(quiet?' (prefetched)':''));
+      else chatMsg('sys','still unavailable'+(d.error?' ('+d.error.message+')':''));
+    }catch(e){sc.imageUrl=null;}
+    if(!quiet){$('status').textContent="";$('status').className='status';}
+  })();
+  return sc._imageJob;
+}
+const CLIP_MODES={skeleton:"/api/motion",hand:"/api/hand",lineform:"/api/lineform",
+                  compose:"/api/compose",world:"/api/world"};
+/* A composite scene names its panes loosely — normalise whatever the director
+   wrote into the {kind, ...} specs /api/compose expects. */
+function composeParts(sc){
+  const src=Array.isArray(sc.parts)&&sc.parts.length?sc.parts:
+    /* no explicit parts: infer them from whichever step lists are present */
+    [sc.hand_steps&&{kind:"hand",steps:sc.hand_steps},
+     sc.motion_steps&&{kind:"skeleton",steps:sc.motion_steps},
+     sc.shapes&&{kind:"lineform",shapes:sc.shapes,snap:!!sc.snap}].filter(Boolean);
+  return src.slice(0,4).map(p=>{
+    const k=({body:"skeleton",motion:"skeleton",fingers:"hand",gesture:"hand",
+              curve:"lineform",device:"lineform"})[p.kind]||p.kind||"skeleton";
+    const o={kind:k,title:p.title||""};
+    if(k==="lineform"){o.shapes=p.shapes||["curve","phone","wristband"];
+      o.device=p.device||"large";o.snap=!!p.snap;if(p.values)o.values=p.values;}
+    else{o.steps=p.steps||p.hand_steps||p.motion_steps||[];
+      if(p.question)o.question=p.question;
+      if(p.yaw!=null)o.yaw=p.yaw;
+      if(k==="skeleton"&&p.constraint)o.constraint=true;}
+    return o;
+  });
+}
+/* A world chapter names its actors the same loose way a composite names its
+   panes, and adds where each one stands. Placement is optional — world.py
+   has a sensible spot for every kind — but a director that does say gets
+   what it asked for. */
+function worldActors(sc){
+  const src=Array.isArray(sc.actors)&&sc.actors.length?sc.actors:composeParts(sc);
+  return src.slice(0,4).map((p,i)=>{
+    const o=composeParts({parts:[p]})[0];
+    o.id=String(p.id||o.kind+(i?i+1:""));
+    ["at","origin","bind"].forEach(k=>{if(p[k]!=null)o[k]=p[k];});
+    ["yaw","scale"].forEach(k=>{if(p[k]!=null)o[k]=p[k];});
+    if(p.wrap)o.wrap=true;
+    return o;
+  });
+}
+function ensureClip(sc,quiet){
+  /* skeleton / hand / lineform scenes. Pure maths on the server — no key, no
+     token, so unlike diffusion these can never be "disabled", only malformed. */
+  if(sc.clip!==undefined||!CLIP_MODES[sc.mode])return sc._clipJob||Promise.resolve();
+  if(sc._clipJob)return sc._clipJob;
+  /* A mined chapter that knows which second of the source video it came from
+     asks for the REAL tracked body and fingers instead of the synthesised
+     ones. Same clip contract, so nothing downstream changes; if the person
+     is not visible in that window it quietly falls back to synthesis. */
+  if(sc.track&&sc.track.url&&!sc._trackTried){
+    sc._trackTried=true;
+    sc._clipJob=(async()=>{
+      try{
+        if(!quiet){
+          $('status').textContent="Tracking the real hands and body in the video";
+          $('status').className='status busy';}
+        const r=await fetch("/api/track",{method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(sc.track)});
+        const d=await r.json();
+        if(r.ok&&(d.frames||(d.parts&&d.parts.length))){
+          sc.clip=d;
+          const what=d.kind==='compose'
+            ?d.parts.map(p=>PANE_LABEL[p.kind]||p.kind).join(' + ')
+            :(PANE_LABEL[d.kind]||d.kind);
+          chatMsg('sys','&#9673; tracked from the video — '+what
+                 +' ('+(d.parts?d.parts[0].backend:d.backend)+')');
+        }else{
+          chatMsg('sys','could not track that moment'
+                 +(d.error?' ('+d.error.message+')':'')+' — synthesising instead');
+          sc._clipJob=null; delete sc.clip;
+          await ensureClip(sc,quiet);
+        }
+      }catch(e){ sc._clipJob=null; delete sc.clip; await ensureClip(sc,quiet); }
+      if(!quiet){$('status').textContent="";$('status').className='status';}
+    })();
+    return sc._clipJob;
+  }
+  const m=sc.mode;
+  sc._clipJob=(async()=>{
+    try{
+      if(!quiet){
+        $('status').textContent=m==="skeleton"?"Solving the skeleton chains"
+                               :m==="hand"?"Solving the finger chains"
+                               :m==="compose"?"Solving every pane on one timeline"
+                               :m==="world"?"Building the room — every rig in one space"
+                               :"Fitting the curve to the chain";
+        $('status').className='status busy';}
+      const body=
+        m==="world"   ?{actors:worldActors(sc),seconds:sc.seconds||14,
+                        question:sc.question||"",title:sceneName(sc),
+                        screen:sc.screen!==false&&!!(sc.video_prompt
+                               ||sc.image_prompt||sc.step_videos),
+                        stage:sc.stage,shots:sc.shots}
+       :m==="skeleton"?{steps:sc.motion_steps||[],text:sc.motion_prompt||"",
+                        seconds:sc.seconds||10,title:sceneName(sc),
+                        constraint:!!sc.constraint,yaw:sc.yaw}
+       /* "text" is what makes a rescued chapter work: handform parses free
+          prose into steps, so a narration alone still yields real motion */
+       :m==="hand"    ?{steps:sc.hand_steps||sc.motion_steps||[],
+                        text:sc.motion_prompt||"",
+                        question:sc.question||"",seconds:sc.seconds||10,
+                        title:sceneName(sc),yaw:sc.yaw}
+       :m==="compose" ?{parts:composeParts(sc),seconds:sc.seconds||12,
+                        question:sc.question||"",title:sceneName(sc),
+                        layout:sc.layout}
+       :               {shapes:sc.shapes||["curve","phone","wristband"],
+                        device:sc.device||"large",snap:!!sc.snap,
+                        seconds:sc.seconds||9,values:sc.values};
+      const r=await fetch(CLIP_MODES[m],{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const d=await r.json();
+      if(r.ok&&(d.frames||(d.kind==='compose'&&d.parts&&d.parts.length)
+                        ||(d.kind==='world'&&d.actors&&d.actors.length))){
+        sc.clip=d;
+        const note=m==="world"
+          ?'&#9634; room ready — '+d.actors.map(a=>(PANE_LABEL[a.kind]||a.kind)
+             +(a.bind?' (bound to '+a.bind.actor+')':'')).join(' + ')
+             +' in one space, '+(d.shots||[]).length+' camera shots'
+          :m==="compose"
+          ?'&#9707; composite ready — '+d.parts.map(p=>PANE_LABEL[p.kind]||p.kind)
+             .join(' + ')+' on one timeline'
+          :m==="skeleton"
+          ?'&#9783; skeleton clip ready — '+(d.gestures||[]).length+' gesture(s) tracked'
+          :m==="hand"
+          ?'&#9995; hand clip ready — '+(d.gestures||[]).map(g=>g.name)
+             .filter((v,i,a)=>a.indexOf(v)===i).join(', ')
+          :'&#9548; actuated curve fitted — '+d.device.joints+' servos';
+        chatMsg('sys',note+(quiet?' (prefetched)':''));
+      }else{
+        sc.clip=null;
+        chatMsg('sys','motion unavailable'+(d.error?' ('+d.error.message+')':''));
+      }
+    }catch(e){sc.clip=null;}
+    if(!quiet){$('status').textContent="";$('status').className='status';}
+  })();
+  return sc._clipJob;
+}
+const ensureMedia=(sc,quiet)=>
+  /* a chapter with nothing to draw gets performed by the rigs first */
+  sc.needsRescue?(delete sc.needsRescue,
+                  rescueScene(sc).then(()=>ensureMedia(sc,quiet))):
+  sc.mode==="hybrid"?ensureVideo(sc,quiet):
+  sc.mode==="photo"?ensureImage(sc,quiet):
+  /* a room is solved and its footage generated at the same time; the room
+     is instant, so the clip is what anyone waits for */
+  /* the room is solved first because the step cues are read off it; solving
+     is pure maths and instant, so nothing waits on that ordering */
+  sc.mode==="world"?ensureClip(sc,quiet).then(()=>Promise.all(
+      [ensureVideo(sc,quiet),ensureImage(sc,quiet),ensureStepVideos(sc,quiet)])):
+  CLIP_MODES[sc.mode]?ensureClip(sc,quiet):Promise.resolve();
+
+/* No token, or generation failed: fall back to the animation engine, which
+   always works — never leave annotation strokes floating over an empty board. */
+function coerceMode(sc){
+  if(CLIP_MODES[sc.mode])return;                          /* always available */
+  if(sc.mode==="hybrid"&&!videoEnabled)
+    sc.mode=(imageEnabled&&(sc.image_prompt||sc.video_prompt))?"photo":"anim";
+  if(sc.mode==="photo"){
+    sc.image_prompt=sc.image_prompt||sc.video_prompt;
+    if(!imageEnabled||!sc.image_prompt)sc.mode="anim";
+  }
+  if(sc.mode==="anim"&&!sc.els?.length)prepScene(sc);
+}
+async function fallbackFromFailedMedia(sc){
+  if(sc.mode==="hybrid"&&sc.videoUrl===null&&imageEnabled&&(sc.image_prompt||sc.video_prompt)){
+    sc.mode="photo"; sc.image_prompt=sc.image_prompt||sc.video_prompt;
+    chatMsg('sys','clip failed — falling back to a generated still');
+    await ensureImage(sc);
+  }
+  const dead=(sc.mode==="hybrid"&&sc.videoUrl===null)||
+             (sc.mode==="photo"&&sc.imageUrl===null)||
+             (CLIP_MODES[sc.mode]&&sc.clip===null);
+  if(dead){
+    if(sc.els&&sc.els.length){          /* it has real authored elements */
+      chatMsg('sys','generation failed — animating it instead');
+      sc.mode="anim"; prepScene(sc);
+    }else if(!sc.rescued){              /* nothing authored: perform it */
+      chatMsg('sys','generation failed — performing it with the rigs instead');
+      sc.clip=undefined; sc._clipJob=null;
+      await rescueScene(sc);
+      await ensureClip(sc);
+    }
+  }
+}
+function ensureAnnotations(sc){
+  /* SketchAgent's only job now: a couple of marker strokes on top.
+     Never awaited by the chapter — the animation starts immediately and the
+     strokes attach when they arrive, since they only land partway through. */
+  if(sc._annoJob)return sc._annoJob;
+  const on=sc.mode==="anim"
+    ?sc.els.map(e=>{const[a,b]=elAnchor(e);
+       return `${e.label||e.text} at x${Math.round(a)}y${Math.round(b)}`;})
+       .filter(s=>!s.startsWith(" at")).join("; ")
+    :CLIP_MODES[sc.mode]
+      ?(sc.clip?clipContextFor(sc.clip).join("; "):"")
+    :(sc.image_prompt||sc.video_prompt||"");
+  if(!on){sc.annos=[];return Promise.resolve();}
+  sc._annoJob=(async()=>{
+    try{
+      const raw=await askClaude(SKETCH_SYS+langRule(),
+        `On screen: ${on}
+Narration: "${sc.narration}"
+Add 2-3 annotation strokes that point at whatever the narration emphasises.`,[],1500);
+      sc.annos=parseStrokes(raw).slice(0,4);
+    }catch(e){sc.annos=[];}
+  })();
+  return sc._annoJob;
+}
+function attachAnnos(sc){
+  /* strokes came back mid-chapter: hand them to the player if it is still
+     this chapter and it has not already scheduled them */
+  if(scenes[currentScene]!==sc||!player.active||player.annos.length)return;
+  if(!sc.annos||!sc.annos.length)return;
+  player.annos=strokesToItems(sc.annos,0.12);
+  player.annosBound=false;
+  player.annoTotal=player.annos.reduce((s,i)=>s+i.pl.length,0);
+  player.annoBudget=0; player.annoActive=false;
+  player.annoAt=Math.min(player.drawMs*0.62,Math.max(player.elapsed+400,0));
+}
+/* Pressing Start while something is already playing used to be a silent
+   no-op: the button did nothing and said nothing, which reads as a broken
+   app. A new topic in the box means "stop that and do this", so a lesson has
+   to be interruptible from the outside, not only pausable. */
+let lessonAbort=false;
+function stopLesson(){
+  if(!lessonRunning)return Promise.resolve();
+  lessonAbort=true; pendingSeek=null;
+  player.cancelRequested=true;
+  if(player.paused)resumeLesson();       /* a paused lesson can never exit */
+  return new Promise(res=>{
+    const t=setInterval(()=>{if(!lessonRunning){clearInterval(t);res();}},60);
+    setTimeout(()=>{clearInterval(t);res();},4000);   /* never hang the button */
+  });
+}
+async function runLesson(startAt=0){
+  if(lessonRunning)return;
+  lessonRunning=true; lessonAbort=false;
+  setBadge('live'); $('pauseBtn').disabled=false;
+  try{
+    for(let i=startAt;i<scenes.length;i++){
+      if(lessonAbort)break;
+      if(pendingSeek!=null){i=pendingSeek;pendingSeek=null;}
+      await waitWhilePaused();
+      currentScene=i; player.sceneIdx=i; const sc=scenes[i];
+      coerceMode(sc);
+      renderSceneList(); renderTimeline();
+      $('sceneMeta').textContent=`Ch. ${i+1}/${scenes.length} — ${sceneName(sc)}`;
+      await ensureMedia(sc);                 /* the backdrop must be there first */
+      await fallbackFromFailedMedia(sc);
+      ensureAnnotations(sc).then(()=>attachAnnos(sc));   /* never blocks the beat */
+      await waitWhilePaused();
+      if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;continue;}
+      captionText=sc.narration; captionQA=false;
+      wipe();
+      if(voiceOn)speak(sc.narration); else {speaking=false;}
+      if(scenes[i+1]){                       /* prefetch the next chapter */
+        coerceMode(scenes[i+1]);
+        ensureMedia(scenes[i+1],true); ensureAnnotations(scenes[i+1]);
+      }
+      await playScene(sc,(sc.seconds||8)*1000);
+      if(lessonAbort)break;
+      await waitWhilePaused();
+      if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;}
+    }
+    if(!lessonAbort){
+      currentScene=scenes.length; player.sceneIdx=scenes.length;
+      renderSceneList();
+      $('sceneMeta').textContent="Done — keep asking, or click a chapter to replay";
+    }
+  }catch(e){
+    $('status').textContent=e.message;$('status').className='status err';
+  }
+  lessonRunning=false; player.active=false; setBadge('');
+  if(lessonAbort){lessonAbort=false;return;}      /* something else is starting */
+  if(pendingSeek!=null){const s=pendingSeek;pendingSeek=null;runLesson(s);}
+}
+async function startLesson(){
+  if(answering){                       /* mid-answer: say so instead of nothing */
+    $('status').textContent="Finishing an answer first — press Start again in a second";
+    $('status').className='status busy'; return;
+  }
+  topicNow=$('topic').value.trim();
+  if(!topicNow){$('status').textContent="Enter a topic first";$('status').className='status err';return;}
+  if(COACH.on)await coachStop();       /* the camera does not survive a lesson */
+  if(lessonRunning){
+    $('status').textContent="Stopping the current lesson";
+    $('status').className='status busy';
+    chatMsg('sys','&#9632; stopped the lesson that was playing');
+    await stopLesson();
+  }
+  $('status').className='status';$('go').disabled=true;
+  $('chat').innerHTML="";qaHistory=[];currentScene=-1;
+  if(voiceOn)withVoices(()=>voiceNote(true));   /* before a word is spoken */
+  try{
+    $('status').textContent="Director is storyboarding the animation";$('status').className='status busy';
+    let raw=await askClaude(DIRECTOR_SYS+langRule(),`Topic: ${topicNow}`,[],6000);
+    scenes=parseModelJSON(raw,"director").map(prepScene);
+    renderSceneList(); renderTimeline();
+    $('status').textContent="";$('status').className='status';
+    await runLesson(0);
+  }catch(e){
+    $('status').textContent=e.message;$('status').className='status err';
+  }finally{$('go').disabled=false;}
+}
+$('go').onclick=startLesson;
+
+/* ============ record to a video file for YouTube ============ */
+$('rec').onclick=()=>{
+  if(recorder){recorder.stop();return;}
+  if(!('MediaRecorder'in window)){$('status').textContent="Recording not supported in this browser";$('status').className='status err';return;}
+  const stream=cv.captureStream(30);
+  const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm';
+  recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4_000_000});
+  const chunks=[];
+  recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
+  recorder.onstop=()=>{
+    const blob=new Blob(chunks,{type:'video/webm'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(topicNow||'tutorial').replace(/\W+/g,'_')+'.webm';
+    a.click(); URL.revokeObjectURL(a.href);
+    recorder=null; $('recdot').className='recdot'; $('rec').textContent='Record';
+    chatMsg('sys','&#9679; saved video — upload the .webm straight to YouTube');
+  };
+  recorder.start(500);
+  $('recdot').className='recdot on'; $('rec').textContent='Stop & save';
+  chatMsg('sys','&#9679; recording the board (captions + tutor included, silent track)');
+};
+
+/* ============ built-in animated lessons ============ */
+const DEMO_SCENE={
+  narration:"Nothing here is hand-drawn. Each part animates into place, one beat at a time — interrupt me and I will mark up whatever is on screen.",
+  title:"a simple house", mode:"anim", seconds:12,
+  steps:[
+    {beat:"the walls",els:[
+      {type:"box",x:20,y:19,w:14,h:12,label:"walls",color:"ink",in:"grow"}]},
+    {beat:"roof and door",els:[
+      {type:"line",from:[13,25],to:[20,33],color:"ink",in:"grow"},
+      {type:"line",from:[20,33],to:[27,25],color:"ink",in:"grow"},
+      {type:"box",x:20,y:15,w:4,h:5,label:"",color:"blue",in:"pop"}]},
+    {beat:"the sun warms it",els:[
+      {type:"circle",x:39,y:34,r:4,label:"sun",color:"red",in:"pop",motion:"pulse"},
+      {type:"arrow",from:[36,32],to:[28,27],label:"light",color:"red",in:"grow",motion:"flow"}]}
+  ]};
+const HOW_ANIM=[
+ {narration:"You give me a topic. A director model reads it and storyboards the chapters — what to say, and what should animate on the board.",
+  title:"topic becomes a storyboard",mode:"anim",seconds:11,
+  steps:[
+    {beat:"your topic",els:[
+      {type:"box",x:10,y:34,w:12,h:7,label:"your topic",color:"blue",in:"slide"},
+      {type:"arrow",from:[17,34],to:[24,34],color:"ink",in:"grow",motion:"flow"}]},
+    {beat:"the director plans",els:[
+      {type:"circle",x:29,y:34,r:5,label:"director",color:"purple",in:"pop",motion:"pulse"}]},
+    {beat:"chapters fall out",els:[
+      {type:"box",x:40,y:40,w:9,h:5,label:"ch 1",color:"ink",in:"pop"},
+      {type:"box",x:40,y:33,w:9,h:5,label:"ch 2",color:"ink",in:"pop"},
+      {type:"box",x:40,y:26,w:9,h:5,label:"ch 3",color:"ink",in:"pop"}]}]},
+ {narration:"Each chapter is a list of beats. A beat names a few shapes and how they should enter and keep moving. The board builds up, beat by beat — it never wipes and starts over.",
+  title:"beats build the picture",mode:"anim",seconds:12,
+  steps:[
+    {beat:"beat one",els:[
+      {type:"box",x:12,y:30,w:10,h:7,label:"beat 1",color:"blue",in:"pop"}]},
+    {beat:"beat two adds",els:[
+      {type:"box",x:25,y:30,w:10,h:7,label:"beat 2",color:"blue",in:"pop"},
+      {type:"arrow",from:[18,30],to:[19,30],color:"ink",in:"grow"}]},
+    {beat:"beat three adds",els:[
+      {type:"box",x:38,y:30,w:10,h:7,label:"beat 3",color:"blue",in:"pop"},
+      {type:"arrow",from:[31,30],to:[32,30],color:"ink",in:"grow"},
+      {type:"text",x:25,y:18,text:"nothing is hand-drawn",color:"purple",in:"fade"}]}]},
+ {narration:"The sketch model only comes in at the end, and only to annotate: a circle around the thing I am talking about, an arrow at it, in red over the top.",
+  title:"sketch agent annotates",mode:"anim",seconds:11,
+  steps:[
+    {beat:"the finished animation",els:[
+      {type:"box",x:22,y:30,w:16,h:10,label:"the animation",color:"ink",in:"grow"}]},
+    {beat:"annotation lands on top",els:[
+      {type:"circle",x:22,y:30,r:9,label:"",color:"red",in:"pop"},
+      {type:"arrow",from:[40,20],to:[31,26],label:"look here",color:"red",in:"grow"}]}]},
+ {narration:"And the tutor you can see in the corner is pure CSS — it bobs, it blinks, and its mouth is driven by the words I am speaking right now.",
+  title:"the talking tutor",mode:"anim",seconds:11,
+  steps:[
+    {beat:"words come in",els:[
+      {type:"text",x:15,y:34,text:"narration",color:"ink",in:"slide"},
+      {type:"arrow",from:[22,34],to:[30,34],label:"per word",color:"blue",in:"grow",motion:"flow"}]},
+    {beat:"visemes drive the mouth",els:[
+      {type:"circle",x:37,y:34,r:6,label:"visemes",color:"purple",in:"pop",motion:"pulse"},
+      {type:"text",x:25,y:20,text:"CSS tweens between mouth shapes",color:"ink",in:"fade"}]}]}];
+const HOW_LEARN=[
+ {narration:"A screen agent like OpenClaw runs a browser. A skill file tells it: open a how-to site, read the steps, respect the site's rules, save each article.",
+  title:"the crawler agent",mode:"anim",seconds:11,
+  steps:[
+    {beat:"the browser",els:[
+      {type:"box",x:14,y:32,w:18,h:14,label:"how-to site",color:"ink",in:"grow"}]},
+    {beat:"articles stream out",els:[
+      {type:"arrow",from:[24,32],to:[34,32],label:"saved",color:"blue",in:"grow",motion:"flow"},
+      {type:"box",x:41,y:32,w:10,h:8,label:"store",color:"purple",in:"pop"}]}]},
+ {narration:"Each saved article becomes a small graph: the task in the middle, its steps in order below, and the tools it needs off to the side.",
+  title:"article becomes a graph",mode:"anim",seconds:11,
+  steps:[
+    {beat:"the task",els:[
+      {type:"circle",x:25,y:34,r:5,label:"task",color:"blue",in:"pop"}]},
+    {beat:"its steps",els:[
+      {type:"dot",x:17,y:22,label:"step 1",color:"ink",in:"pop"},
+      {type:"dot",x:25,y:20,label:"step 2",color:"ink",in:"pop"},
+      {type:"dot",x:33,y:22,label:"step 3",color:"ink",in:"pop"},
+      {type:"line",from:[23,30],to:[18,24],color:"ink",in:"grow"},
+      {type:"line",from:[25,29],to:[25,22],color:"ink",in:"grow"}]},
+    {beat:"and its tools",els:[
+      {type:"dot",x:39,y:34,label:"tool",color:"green",in:"pop",motion:"bob"},
+      {type:"line",from:[30,34],to:[38,34],color:"green",in:"grow"}]}]},
+ {narration:"Tasks that share a tool link to each other, so thousands of articles knit into one hivemind. Your question finds the closest tasks, and I answer only from what the hive really knows.",
+  title:"the hivemind answers",mode:"anim",seconds:12,
+  steps:[
+    {beat:"two tasks",els:[
+      {type:"circle",x:13,y:30,r:5,label:"task A",color:"blue",in:"pop"},
+      {type:"circle",x:37,y:30,r:5,label:"task B",color:"blue",in:"pop"}]},
+    {beat:"a shared tool links them",els:[
+      {type:"dot",x:25,y:20,label:"shared tool",color:"green",in:"pop",motion:"pulse"},
+      {type:"line",from:[15,26],to:[24,21],color:"green",in:"grow"},
+      {type:"line",from:[35,26],to:[26,21],color:"green",in:"grow"}]},
+    {beat:"your question arrives",els:[
+      {type:"arrow",from:[25,44],to:[25,36],label:"your question",color:"red",in:"grow",motion:"flow"},
+      {type:"text",x:25,y:12,text:"grounded, with sources",color:"purple",in:"fade"}]}]}];
+
+async function playPreset(name,preset){
+  if(answering){
+    $('status').textContent="Finishing an answer first — press it again in a second";
+    $('status').className='status busy'; return;
+  }
+  if(COACH.on)await coachStop();
+  if(lessonRunning)await stopLesson();     /* a preset button always works */
+  topicNow=name; qaHistory=[]; currentScene=-1;
+  scenes=preset.map(s=>prepScene(JSON.parse(JSON.stringify(s))));
+  $('chat').innerHTML="";renderSceneList();renderTimeline();
+  runLesson(0);
+}
+/* ===== the motion lesson: LineFORM's idea applied to a body ===== */
+const HOW_MOVE=[
+ {narration:"Watch my right hand. This is not a video and it is not a rig — every limb you can see is a chain of servo motors, and what the browser receives is the angle of each one.",
+  title:"a body made of servo chains",mode:"skeleton",seconds:11,
+  motion_steps:["Grip the handle firmly","Twist it counter-clockwise",
+                "Pull the cover toward you"]},
+ {narration:"The red arrows are the real velocity of each joint, and the faint purple field behind me is the same motion spread across the whole frame — the way an optical flow network or a video codec would store it.",
+  title:"motion becomes vector data",mode:"skeleton",seconds:11,
+  motion_steps:["Wipe the surface clean with a rag",
+                "Tap the panel twice to seat it"]},
+ {narration:"Nothing labels these gestures for me. The names in the corner are read back out of the joint positions afterwards, which is why the same code can label a real tracked video.",
+  title:"gestures read back from the frames",mode:"skeleton",seconds:12,
+  motion_steps:["Pour the oil slowly onto the chain",
+                "Rotate the pedals forward","Lift the wheel clear of the ground"]}];
+const HOW_CURVE=[
+ {narration:"This is LineFORM — twenty-eight servo motors in a line, from a paper by Nakagaki, Follmer and Ishii. Give it any vector outline and it works out the angle for each motor, then holds that shape.",
+  title:"one line, many shapes",mode:"lineform",seconds:12,
+  shapes:["curve","phone","wristband"]},
+ {narration:"A single curve can be a surface if you fold it tightly enough, or a solid if you fill space with it. The residual in the corner is the honest gap — what the drawing asked for, minus what twenty-eight joints can physically hold.",
+  title:"curve, surface, solid",mode:"lineform",seconds:12,
+  shapes:["curve","surface","solid"]},
+ {narration:"And because each joint has only one degree of freedom, you can constrain it further — here it is locked to right angles, which is how the paper lets you snap a CAD model to a grid by hand.",
+  title:"snapped to right angles",mode:"lineform",seconds:9,
+  shapes:["data","slider"],snap:true}];
+
+/* ===== a real repair, demonstrated by hands, straight from the hivemind ===== */
+const FIX_CHAIN=[
+ {narration:"Your chain has come off the chainring. Before you touch it, shift to the smallest rear cog — that gives you all the slack you are going to need.",
+  title:"make some slack",mode:"hand",seconds:10,
+  hand_steps:["Grip the shifter and click it down",
+              "Open your hand away from the chain"]},
+ {narration:"Now push the rear derailleur forward. Watch my fingers — that is a flat push with the whole hand, not a pinch. It takes the spring tension off.",
+  title:"push the derailleur forward",mode:"hand",seconds:11,
+  hand_steps:["Press the derailleur cage forward with a flat hand",
+              "Hold it there"]},
+ {narration:"With the slack there, pinch the chain and lay it onto the bottom teeth of the chainring. Two fingers and a thumb — you are guiding it, not forcing it.",
+  title:"seat the chain",mode:"hand",seconds:12,
+  hand_steps:["Pinch the chain between thumb and finger",
+              "Place the chain onto the chainring teeth",
+              "Release the derailleur slowly"]},
+ {narration:"Then turn the pedals forward by hand until it climbs on and runs true. Keep your fingers clear of the teeth while it is moving.",
+  title:"pedal it home",mode:"hand",seconds:11,
+  hand_steps:["Grip the pedal and rotate it forward",
+              "Wipe your fingers clean on a rag"]}];
+
+/* ===== the modes stop being mutually exclusive ===== */
+const HOW_BOTH=[
+ {narration:"Here is the thing a single camera angle can never show you. On the left my whole body braces the wheel; on the right, the same moment, my fingers seat the chain. One timeline, two rigs, both solved from the same sentence.",
+  title:"posture and grip at once",mode:"compose",seconds:13,
+  parts:[{kind:"skeleton",title:"posture",
+          steps:["Brace the wheel against your knee","Lean over the frame"]},
+         {kind:"hand",title:"grip",
+          steps:["Pinch the chain between thumb and finger",
+                 "Place the chain onto the chainring teeth"]}]},
+ {narration:"Add the actuated curve and you get three rigs running together — the body that does the work, the fingers that do the detail, and the servo chain showing the shape the part is supposed to end up in.",
+  title:"three rigs, one playhead",mode:"compose",seconds:14,
+  parts:[{kind:"skeleton",title:"whole body",
+          steps:["Grip the handle firmly","Twist it counter-clockwise"]},
+         {kind:"hand",title:"fingers",
+          steps:["Grip the cap and twist counter-clockwise","Lift it away"]},
+         {kind:"lineform",title:"target shape",shapes:["curve","wristband"]}]},
+ {narration:"Interrupt me during any of this and I can still point at the exact finger in the right-hand pane — each pane reports its own landmarks back in board coordinates, so an annotation lands where it should.",
+  title:"every pane is pointable",mode:"compose",seconds:12,
+  parts:[{kind:"hand",title:"left hand",
+          steps:["Press the derailleur cage forward with a flat hand"]},
+         {kind:"hand",title:"right hand",
+          steps:["Pinch the chain and guide it onto the teeth"]}]}];
+
+/* ===== the panes stop being separate rooms ===== */
+const HOW_WORLD=[
+ {narration:"Panes were a compromise. This is the same body and the same fingers, but now they are in one room at real scale — that is not a second hand next to me, it is my hand, and the camera is deciding when you need to be close to it.",
+  title:"one room, not three panes",mode:"world",seconds:16,
+  actors:[{kind:"skeleton",title:"the body",
+           steps:["Brace the wheel against your knee","Lean over the frame",
+                  "Grip the chain firmly"]},
+          {kind:"hand",title:"the grip",
+           steps:["Pinch the chain between thumb and finger",
+                  "Place the chain onto the chainring teeth",
+                  "Release it slowly"]}]},
+ {narration:"Now the part a split screen could never show you. The servo chain is not beside my arm, it is wrapped around it — bandaged to the forearm, riding it frame by frame. That is the constraint the LineFORM paper builds, and it only means anything if the chain and the arm are in the same space.",
+  title:"the chain is on the arm",mode:"world",seconds:16,
+  actors:[{kind:"skeleton",title:"the body",
+           steps:["Grip the handle firmly","Twist it counter-clockwise",
+                  "Pull the cover toward you"]},
+          {kind:"hand",title:"the fingers",
+           steps:["Grip the cap and twist counter-clockwise","Lift it away"]},
+          {kind:"lineform",title:"the constraint",shapes:["wristband","curve"],
+           wrap:true}]},
+ {narration:"And the generated footage stops being wallpaper. Every step gets its own clip, cut onto that screen at the moment my fingers reach that step — so behind the servo chain doing the pinch, there is film of a real hand doing the pinch. I can walk in front of it, and if you ask me to look at it, I turn the camera and look at it. Drag the board — the room is yours too.",
+  title:"footage cut to the steps",mode:"world",seconds:16,
+  step_videos:true,
+  actors:[{kind:"hand",title:"the fingers",
+           steps:["Pinch the chain between thumb and finger",
+                  "Place the chain onto the chainring teeth",
+                  "Rotate the pedal forward until it seats"]},
+          {kind:"lineform",title:"target shape",shapes:["curve","phone"]}]}];
+
+$('howworld').onclick=()=>playPreset("one 3D room (LineFORM + generated footage)",HOW_WORLD);
+$('howdraw').onclick=()=>playPreset("how I animate",HOW_ANIM);
+$('howlearn').onclick=()=>playPreset("how I learn (crawler + hivemind)",HOW_LEARN);
+$('fixit').onclick=()=>playPreset("fixing a slipped bicycle chain",FIX_CHAIN);
+$('howmove').onclick=()=>playPreset("how motion works (3D skeleton + gestures)",HOW_MOVE);
+$('howcurve').onclick=()=>playPreset("actuated curve interfaces (LineFORM)",HOW_CURVE);
+$('howboth').onclick=()=>playPreset("body skeleton and hand gestures together",HOW_BOTH);
+$('demo').onclick=()=>playPreset("a simple house",[DEMO_SCENE]);
+
+/* ===== OpenClaw: a YouTube how-to becomes a lesson the rigs perform =====
+   The server reads the transcript, Claude splits it into steps and says of
+   each one whether the fingers do the work, the body does, or both — and
+   "both" comes back as a compose chapter, so posture and grip play side by
+   side. The steps land in the hivemind on the way past, so the video keeps
+   answering questions long after it has finished playing. */
+async function mineVideo(url){
+  if(lessonRunning||answering||COACH.on){
+    chatMsg('sys','finish or pause the lesson first');return;}
+  if(!url){chatMsg('sys','paste a YouTube URL, a how-to article URL, '
+                        +'or just type what you want to learn');return;}
+  $('mine').disabled=true;
+  $('status').textContent="Reading the transcript and extracting the steps";
+  $('status').className='status busy';
+  try{
+    const r=await fetch("/api/mine",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({url:url,track:trackReal})});
+    const d=await r.json();
+    if(!r.ok||!d.lesson||!d.lesson.length){
+      chatMsg('sys','could not mine that video'+(d.error?' — '+d.error.message:''));
+      return;
+    }
+    const mods=(d.doc.steps||[]).map(s=>s.modality);
+    const count=m=>mods.filter(x=>x===m).length;
+    const nodes=Object.values((d.stats&&d.stats.nodes)||{}).reduce((a,b)=>a+b,0);
+    chatMsg('sys','&#9683; mined "'+d.title+'" — '+d.lesson.length+' chapters ('
+           +count('both')+' body+hands, '+count('hand')+' hands, '
+           +count('body')+' body), now '+nodes+' nodes in the hivemind');
+    if(d.doc.warnings&&d.doc.warnings.length)
+      chatMsg('sys','the video warned: '+d.doc.warnings[0]);
+    playPreset(d.title,d.lesson);
+  }catch(e){
+    chatMsg('sys','mining failed — '+e.message);
+  }finally{
+    $('mine').disabled=false;
+    $('status').textContent="";$('status').className='status';
+  }
+}
+$('mine').onclick=()=>mineVideo($('tube').value.trim());
+$('tube').addEventListener('keydown',e=>{
+  if(e.key==='Enter')mineVideo($('tube').value.trim());});
+
+/* Off by default: tracking downloads the video and runs two neural trackers
+   over it, which is tens of seconds a chapter rather than instant. */
+let trackReal=false;
+$('track').onclick=e=>{
+  if(!trackEnabled){
+    chatMsg('sys','real tracking is not installed on the server'
+           +(trackWhy?' — '+trackWhy:''));return;}
+  trackReal=!trackReal;
+  e.target.textContent=trackReal?"Track: on":"Track: off";
+  e.target.setAttribute('aria-pressed',trackReal);
+  chatMsg('sys',trackReal
+    ?'&#9673; tracking on — mined chapters will use the real body and hands '
+     +'from the video (BlazePose + MediaPipe Hands), which takes longer'
+    :'&#9673; tracking off — motion will be synthesised from the transcript');
+};
+
+$('vectors').onclick=e=>{showVectors=!showVectors;
+  e.target.textContent=showVectors?"Vectors on":"Vectors off";
+  e.target.setAttribute('aria-pressed',showVectors);};
+
+/* ======================= live coaching ==================================
+   Every other mode in this file points one way: the rig performs and the
+   student watches. This is the return path — the camera comes on, MediaPipe
+   tracks the student's body in this tab, and the same nine joint angles are
+   measured on both sides and subtracted. What comes out is not a score for
+   its own sake but a sentence: "straighten your right elbow".
+
+   Two landmark streams come back from one detection and both are used, for
+   different reasons:
+
+     worldLandmarks  metres, hip-centred, camera-independent  -> the angles
+     landmarks       normalised image space                   -> the overlay
+
+   Angles have to come from the world stream or the grade would depend on
+   where the student stood; the overlay has to come from the image stream or
+   the bones would not sit on the body in the video. Using either one for
+   both jobs is the obvious mistake here.
+
+   Nothing is uploaded. The video element is never sent anywhere, the model
+   runs on the GPU in this tab, and the only thing that reaches the server is
+   a few angles per second when the session ends and asks for a summary.
+
+   The DEFINITIONS — which triples of joints are measured, what tolerance a
+   step allows, how a delta becomes English — all arrive from coach.py in
+   the reference payload. This file computes, it does not decide. */
+const MP_VER="0.10.14";
+const MP_BASE="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@"+MP_VER;
+const POSE_MODEL="https://storage.googleapis.com/mediapipe-models/pose_landmarker"
+                +"/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+/* the same model file posetrack.py downloads server-side, so a clip tracked
+   here and one tracked there come off identical weights */
+const HAND_MODEL="https://storage.googleapis.com/mediapipe-models/hand_landmarker"
+                +"/hand_landmarker/float16/1/hand_landmarker.task";
+const REPLAY_FPS=12;        /* posetrack.TRACK_FPS — the board's own rate */
+const REPLAY_MAX=240;       /* posetrack.MAX_SECONDS * TRACK_FPS */
+/* MediaPipe's 21 hand landmarks, in handform.FINGER_CHAIN order: four bones
+   per finger off the wrist, plus the knuckle line so a palm reads as a palm */
+const HAND_BONES=[[0,1],[1,2],[2,3],[3,4], [0,5],[5,6],[6,7],[7,8],
+                  [0,9],[9,10],[10,11],[11,12], [0,13],[13,14],[14,15],[15,16],
+                  [0,17],[17,18],[18,19],[19,20], [5,9],[9,13],[13,17],[1,5]];
+const VIS_MIN=0.5;          /* a landmark below this is not being seen */
+const CUE_HOLD=1100;        /* ms a fault must persist before it is spoken */
+const CUE_GAP=4200;         /* ms between spoken corrections, so it is a coach
+                               and not a metronome */
+const SAMPLE_MS=250;
+
+const COACH={
+  on:false, starting:false, ref:null, clip:null, spec:null,
+  step:0, mirror:true,
+  video:null, stream:null, landmarker:null, hander:null,
+  lastVideoTime:-1, lm:null, handLm:null, live:null, last:null,
+  seenAt:0, holdMs:0, loopT0:0, sampleAt:0,
+  cueText:"", cueSince:0, spokeAt:0, spokeText:"",
+  samples:[], note:"", err:"", fps:0, fpsT:0, fpsN:0,
+  /* the take: raw landmark streams kept exactly as the trackers emit them,
+     because /api/replay hands them to the same functions posetrack feeds —
+     reducing them here would mean two different decimations to keep in sync */
+  recBody:[], recHand:[], recAt:0
+};
+
+/* --- the same arithmetic as coach.py, from the same definitions ---------- */
+function angleAt(a,b,c){
+  const u=V.sub(a,b), w=V.sub(c,b), nu=V.len(u), nw=V.len(w);
+  if(nu<1e-9||nw<1e-9)return 180;
+  return Math.acos(clampf(V.dot(u,w)/(nu*nw),-1,1))*180/Math.PI;
+}
+/* 33 BlazePose world landmarks -> our 17, y flipped up, exactly as
+   motion.normalize_track does it server-side. Scale is irrelevant: angles
+   do not have units. */
+function coachFrame(wl){
+  const m=COACH.spec.blazepose;
+  return COACH.spec.joints.map(n=>{const p=wl[m[n]];return [p.x,-p.y,p.z];});
+}
+/* Visibility per OUR joint, taken from the image stream (the world stream
+   does not always carry it). A measure whose three joints are not all
+   visible is dropped rather than guessed — a student sitting at a desk gets
+   graded on their arms instead of being marked down for absent ankles. */
+function coachVis(lm){
+  const m=COACH.spec.blazepose;
+  return COACH.spec.joints.map(n=>{
+    const p=lm[m[n]];
+    return p&&p.visibility!=null?p.visibility:1;
+  });
+}
+function coachAngles(frame,vis){
+  const sp=COACH.spec, JI={}; sp.joints.forEach((n,i)=>JI[n]=i);
+  const ok=nm=>vis[JI[nm]]>=VIS_MIN, out={};
+  for(const n in sp.angles){
+    const [a,b,c]=sp.angles[n];
+    if(!(ok(a)&&ok(b)&&ok(c)))continue;
+    out[n]=+angleAt(frame[JI[a]],frame[JI[b]],frame[JI[c]]).toFixed(1);
+  }
+  if(['shoulder_l','shoulder_r','hip_l','hip_r'].every(ok)){
+    const mid=(p,q)=>[(p[0]+q[0])/2,(p[1]+q[1])/2,(p[2]+q[2])/2];
+    const tr=V.sub(mid(frame[JI.shoulder_l],frame[JI.shoulder_r]),
+                   mid(frame[JI.hip_l],frame[JI.hip_r])), n=V.len(tr);
+    out[sp.torso]=n<1e-9?0:+(Math.acos(clampf(tr[1]/n,-1,1))*180/Math.PI).toFixed(1);
+  }
+  return out;
+}
+/* A step's target is a BAND, not a pose — see the note in coach.py. Zero
+   anywhere inside it; outside, the distance to the nearer edge. */
+function offBand(v,t){
+  const lo=t.lo-t.tol, hi=t.hi+t.tol;
+  return v<lo?v-lo:v>hi?v-hi:0;
+}
+function scorePose(live,step){
+  const sp=COACH.spec;
+  if(COACH.mirror){
+    const m={}; for(const n in live)if(sp.mirror[n])m[sp.mirror[n]]=live[n];
+    live=m;
+  }
+  const keys=new Set(step.key||[]);
+  let tot=0,wtot=0,worstKey=1; const deltas={},errs=[];
+  for(const n in step.targets){
+    if(!(n in live))continue;
+    const d=offBand(live[n],step.targets[n]), e=Math.abs(d);
+    const w=keys.has(n)?sp.key_weight:1, s=Math.max(0,1-e/sp.span);
+    tot+=w*s; wtot+=w;
+    if(keys.has(n))worstKey=Math.min(worstKey,s);
+    deltas[n]=d;
+    if(e>0)errs.push([w*e,n,d]);
+  }
+  if(!wtot)return{score:0,deltas:{},cues:[],ok:false,seen:false};
+  errs.sort((a,b)=>b[0]-a[0]);
+  /* the mean alone is too kind: one badly wrong key joint has to show */
+  const sc=Math.round(100*(tot/wtot)*(1-sp.worst_pull*(1-worstKey)));
+  return {score:sc, deltas:deltas, seen:true, ok:sc>=(COACH.ref.pass||78),
+          cues:errs.slice(0,2).map(e=>({angle:e[1], label:sp.cues[e[1]].label,
+            text:e[2]>0?sp.cues[e[1]].over:sp.cues[e[1]].under,
+            off:Math.round(Math.abs(e[2]))}))};
+}
+
+/* --- starting and stopping ---------------------------------------------- */
+async function loadLandmarker(){
+  const vision=await import(MP_BASE+"/vision_bundle.mjs");
+  const files=await vision.FilesetResolver.forVisionTasks(MP_BASE+"/wasm");
+  const pose=d=>vision.PoseLandmarker.createFromOptions(files,{
+    baseOptions:{modelAssetPath:POSE_MODEL,delegate:d},
+    runningMode:"VIDEO",numPoses:1,
+    minPoseDetectionConfidence:0.5,minPosePresenceConfidence:0.5,
+    minTrackingConfidence:0.5});
+  const hand=d=>vision.HandLandmarker.createFromOptions(files,{
+    baseOptions:{modelAssetPath:HAND_MODEL,delegate:d},
+    runningMode:"VIDEO",numHands:1,
+    minHandDetectionConfidence:0.5,minHandPresenceConfidence:0.5,
+    minTrackingConfidence:0.5});
+  /* a machine with no usable WebGL still coaches, just slower */
+  const both=async d=>[await pose(d),await hand(d)];
+  try{return await both("GPU");}catch(e){return await both("CPU");}
+}
+async function coachStart(){
+  if(COACH.on||COACH.starting)return;
+  const topic=$('topic').value.trim();
+  if(!topic){$('status').textContent="Type what you want coached in the topic box";
+    $('status').className='status err';return;}
+  if(answering){$('status').textContent="Finishing an answer first";
+    $('status').className='status busy';return;}
+  COACH.starting=true; $('coach').disabled=true;
+  if(lessonRunning)await stopLesson();
+  try{
+    $('status').textContent="Building the reference motion";
+    $('status').className='status busy';
+    const r=await fetch("/api/coach",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({question:topic,text:topic,seconds:10})});
+    const d=await r.json();
+    if(!r.ok||!d.reference)throw new Error((d.error&&d.error.message)||"no reference");
+    COACH.clip=d.clip; COACH.ref=d.reference; COACH.spec=d.reference;
+
+    $('status').textContent="Asking for your camera";
+    COACH.stream=await navigator.mediaDevices.getUserMedia(
+      {video:{width:{ideal:640},height:{ideal:480},facingMode:"user"},audio:false});
+    const v=document.createElement('video');
+    v.autoplay=true;v.muted=true;v.playsInline=true;v.srcObject=COACH.stream;
+    await v.play();
+    COACH.video=v;
+
+    $('status').textContent="Loading the pose and hand trackers";
+    const pair=await loadLandmarker();
+    COACH.landmarker=pair[0]; COACH.hander=pair[1];
+
+    COACH.recBody=[]; COACH.recHand=[]; COACH.recAt=0;
+    COACH.on=true; COACH.step=0; COACH.samples=[]; COACH.holdMs=0;
+    COACH.last=null; COACH.lm=null; COACH.lastVideoTime=-1;
+    COACH.cueText=""; COACH.spokeText=""; COACH.spokeAt=0; COACH.err="";
+    COACH.loopT0=performance.now(); COACH.sampleAt=0;
+    player.clip=null; player.els=[]; player.annos=[]; player.active=false;
+    scenes=[]; renderSceneList(); renderTimeline(); $('beats').innerHTML="";
+    setBadge('coach');
+    /* the same Pause button the lesson uses — a coaching session is a thing
+       you interrupt, ask about and resume, not a mode with its own controls */
+    $('pauseBtn').disabled=false; $('pauseBtn').textContent='Pause';
+    $('coach').textContent="Finish coaching"; $('coach').classList.add('on');
+    $('status').textContent=""; $('status').className='status';
+    chatMsg('sys','&#9673; coaching "'+(COACH.ref.title||topic)+'" — '
+      +COACH.ref.steps.length+' step(s), judged on '
+      +COACH.spec.measures.length+' joint angles'
+      +(COACH.ref.source==='hivemind'?', grounded in the hivemind':'')
+      +'. Nothing leaves this tab.');
+    /* the reference is only worth copying if there is a movement in it */
+    if(!COACH.ref.physical)
+      chatMsg('sys','&#9888; there is no physical action in "'+topic+'" — the '
+        +'reference is a talking gesture, so the score will not mean much. '
+        +'Try something you can actually do: "squat", "how to lift a box", '
+        +'"change a bike tyre".');
+    const s0=COACH.ref.steps[0];
+    speak("Step one. "+s0.text+". Copy me, and stand back so I can see all of you.");
+    captionText=s0.text; captionQA=false;
+  }catch(e){
+    coachRelease();
+    const why=(e&&e.name==='NotAllowedError')
+      ?"camera permission denied — nothing to coach with"
+      :(e&&e.name==='NotFoundError')?"no camera on this machine"
+      :(""+(e&&e.message||e));
+    $('status').textContent="Coaching failed — "+why;
+    $('status').className='status err';
+    chatMsg('sys','&#9888; coaching could not start — '+why);
+  }finally{
+    COACH.starting=false; $('coach').disabled=false;
+  }
+}
+function coachRelease(){
+  if(COACH.stream)COACH.stream.getTracks().forEach(t=>t.stop());
+  if(COACH.landmarker){try{COACH.landmarker.close();}catch(_){}}
+  if(COACH.hander){try{COACH.hander.close();}catch(_){}}
+  if(COACH.video){COACH.video.srcObject=null;}
+  COACH.stream=null; COACH.landmarker=null; COACH.hander=null;
+  COACH.video=null; COACH.on=false; COACH.handLm=null;
+  $('coach').textContent="Coach me"; $('coach').classList.remove('on');
+  $('pauseBtn').disabled=!lessonRunning;
+}
+async function coachStop(){
+  if(!COACH.on)return;
+  const ref=COACH.ref, samples=COACH.samples.slice(), mirror=COACH.mirror;
+  const body=COACH.recBody.slice(), hand=COACH.recHand.slice();
+  const steps=(ref.steps||[]).map(s=>s.text);
+  const title=ref.title||topicNow||"what you just did";
+  coachRelease();
+  setBadge(''); captionText=""; clearBoard();
+  if(!samples.length&&!body.length&&!hand.length){
+    chatMsg('sys','&#9632; coaching stopped — nothing was tracked');
+    return;
+  }
+  if(samples.length){
+    $('status').textContent="Scoring the session"; $('status').className='status busy';
+    try{
+      const r=await fetch("/api/coach/report",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({reference:ref,samples:samples,mirror:mirror})});
+      const d=await r.json();
+      if(!r.ok||!d.steps)throw new Error((d.error&&d.error.message)||"no report");
+      chatMsg('tutor','<b>'+d.overall+'/100</b> &middot; '+d.steps_passed+'/'
+        +d.steps_total+' steps<br>'+d.steps.map(s=>
+          '<span style="font-family:\'IBM Plex Mono\',monospace;font-size:.72rem">'
+          +'step '+s.step+' &middot; best '+(s.best==null?'—':s.best)+'</span> '
+          +s.verdict).join('<br>'));
+      chatMsg('tutor',d.verdict);
+    }catch(e){
+      chatMsg('sys','&#9888; could not score the session — '+e.message);
+    }finally{
+      $('status').textContent=""; $('status').className='status';
+    }
+  }
+  await coachReplay(body,hand,steps,title);
+}
+
+/* --- the take becomes a chapter ------------------------------------------
+   The camera tracked the student; this hands those landmark streams to the
+   same server functions /api/track feeds, and what comes back is an ordinary
+   clip. It is then pushed into `scenes` and played by runLesson — so the
+   thing they just did is performed by the servo chains, with the gestures
+   recognised from THEIR frames, and pause / interrupt / ask / resume all work
+   on it because it is not a special case. */
+async function coachReplay(body,hand,steps,title){
+  if(body.length<6&&hand.length<6){
+    chatMsg('sys','not enough tracked frames to replay — stand back so the '
+                 +'camera can see you, or hold a hand up in shot');
+    return;
+  }
+  $('status').textContent="Rebuilding what you did as a clip";
+  $('status').className='status busy';
+  try{
+    const r=await fetch("/api/replay",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({body:body,hand:hand,fps:REPLAY_FPS,kind:"compose",
+                           steps:steps,title:title})});
+    const d=await r.json();
+    if(!r.ok||!(d.frames||(d.parts&&d.parts.length)))
+      throw new Error((d.error&&d.error.message)||"no clip");
+    const what=d.kind==='compose'
+      ?d.parts.map(p=>PANE_LABEL[p.kind]||p.kind).join(' + ')
+      :(PANE_LABEL[d.kind]||d.kind);
+    const ges=(d.parts?d.parts:[d]).reduce((n,c)=>n+(c.gestures||[]).length,0);
+    chatMsg('sys','&#9673; replaying your own motion — '+what+', '
+      +Math.round(d.seconds)+'s, '+ges+' gesture(s) read back from your frames'
+      +((d.missing||[]).length?' (no '+d.missing.join('/')+' in shot)':''));
+    /* a scene that already carries its clip: ensureClip short-circuits on
+       sc.clip !== undefined, so nothing is re-fetched or re-synthesised */
+    const sc=prepScene({
+      title:"you, performed by the rigs",
+      narration:"Here is what you just did, rebuilt as motion. Every limb is a "
+               +"chain of servos following the positions the camera tracked — "
+               +"and the gestures named in the corner were read back out of "
+               +"your frames, not out of anything you typed.",
+      mode:d.kind==='compose'?'compose':d.kind,
+      seconds:Math.max(6,Math.round(d.seconds)),
+      clip:d, qa:true, fresh:true});
+    const at=scenes.length;
+    scenes.push(sc); renderSceneList(); renderTimeline();
+    $('status').textContent=""; $('status').className='status';
+    if(!lessonRunning)runLesson(at); else pendingSeek=at;
+  }catch(e){
+    chatMsg('sys','&#9888; could not replay your motion — '+e.message);
+    $('status').textContent=""; $('status').className='status';
+  }
+}
+
+/* --- one frame ----------------------------------------------------------- */
+function coachTick(now){
+  const v=COACH.video;
+  if(!v||v.readyState<2)return;
+  /* detectForVideo must not be handed the same frame twice, and the webcam
+     is 30fps while this loop is 60 — half these ticks are a redraw only */
+  if(v.currentTime!==COACH.lastVideoTime){
+    COACH.lastVideoTime=v.currentTime;
+    let res=null,hres=null;
+    try{res=COACH.landmarker.detectForVideo(v,now);}
+    catch(e){COACH.err=""+(e.message||e);}
+    try{hres=COACH.hander.detectForVideo(v,now);}
+    catch(e){/* fingers are a bonus; a hand miss must not stop the body */}
+    COACH.fpsN++;
+    if(now-COACH.fpsT>1000){COACH.fps=COACH.fpsN;COACH.fpsN=0;COACH.fpsT=now;}
+    const lm=res&&res.landmarks&&res.landmarks[0];
+    const wl=res&&res.worldLandmarks&&res.worldLandmarks[0];
+    const hwl=hres&&hres.worldLandmarks&&hres.worldLandmarks[0];
+    COACH.handLm=(hres&&hres.landmarks&&hres.landmarks[0])||null;
+    /* Record the take at the board's own rate, not the camera's: the clip
+       plays at REPLAY_FPS, so sampling faster only inflates the payload.
+       Streams are kept independent — a frame where the hand left shot is a
+       shorter hand clip, not a hole in the body clip. */
+    if(now-COACH.recAt>=1000/REPLAY_FPS){
+      COACH.recAt=now;
+      const r4=n=>Math.round(n*1e4)/1e4;                 /* 0.1 mm is plenty */
+      if(wl&&COACH.recBody.length<REPLAY_MAX)
+        COACH.recBody.push(wl.map(p=>[r4(p.x),r4(p.y),r4(p.z)]));
+      /* y down -> y up, exactly as posetrack.track_hand does on the way in */
+      if(hwl&&COACH.recHand.length<REPLAY_MAX)
+        COACH.recHand.push(hwl.map(p=>[r4(p.x),r4(-p.y),r4(p.z)]));
+    }
+    if(lm&&wl){
+      COACH.lm=lm;
+      const vis=coachVis(lm);
+      const live=coachAngles(coachFrame(wl),vis);
+      COACH.live=live;
+      const step=COACH.ref.steps[COACH.step];
+      /* three measures is the floor: fewer than that and a "score" would be
+         an opinion about one elbow dressed up as a grade */
+      if(Object.keys(live).length>=3){
+        COACH.last=scorePose(live,step); COACH.seenAt=now; COACH.note="";
+        if(now-COACH.sampleAt>SAMPLE_MS&&COACH.samples.length<3000){
+          COACH.sampleAt=now;
+          COACH.samples.push({step:COACH.step,
+            t:+((now-COACH.loopT0)/1000).toFixed(2),angles:live});
+        }
+      }else{
+        COACH.note="step back — I can only see part of you";
+      }
+    }else{
+      COACH.lm=null;
+      COACH.note="I cannot see anybody — step into frame";
+    }
+  }
+  if(now-COACH.seenAt>700){COACH.last=null;COACH.holdMs=0;}
+
+  /* progress and speech pause while the tutor is answering a question, but
+     tracking does not — the point of interrupting mid-coaching is to ask
+     about the pose you are holding right now */
+  if(player.paused||answering)return;
+
+  const dt=Math.min(now-(COACH.lastNow||now),100); COACH.lastNow=now;
+  const st=COACH.ref.steps[COACH.step];
+  if(COACH.last&&COACH.last.ok){
+    COACH.holdMs+=dt;
+    if(COACH.holdMs>=(COACH.ref.hold||1.6)*1000)coachAdvance();
+  }else if(COACH.last){
+    COACH.holdMs=Math.max(0,COACH.holdMs-dt*0.6);   /* decay, do not reset */
+    const cue=COACH.last.cues[0];
+    if(cue){
+      if(cue.text!==COACH.cueText){COACH.cueText=cue.text;COACH.cueSince=now;}
+      else if(now-COACH.cueSince>CUE_HOLD&&now-COACH.spokeAt>CUE_GAP
+              &&cue.text!==COACH.spokeText&&!speaking){
+        COACH.spokeAt=now; COACH.spokeText=cue.text;
+        captionText=cue.text; captionQA=true;
+        speak(cue.text,true);
+      }
+    }else COACH.cueText="";
+  }
+}
+function coachAdvance(){
+  COACH.holdMs=0; COACH.spokeText=""; COACH.cueText="";
+  if(COACH.step>=COACH.ref.steps.length-1){
+    chatMsg('sys','&#10003; all '+COACH.ref.steps.length+' steps held — finishing');
+    coachStop();
+    return;
+  }
+  COACH.step++;
+  COACH.loopT0=performance.now();
+  const st=COACH.ref.steps[COACH.step];
+  chatMsg('sys','&#10003; step '+COACH.step+' held — moving on');
+  captionText=st.text; captionQA=false;
+  speak("Good. Step "+(COACH.step+1)+". "+st.text);
+  wipe();
+}
+
+/* --- the board while coaching -------------------------------------------- */
+function coachPanes(){
+  const top=10, strip=76, gap=10;
+  const h=cv.height-CAP_H-strip-top, w=(cv.width-gap*3)/2;
+  return {L:[gap,top,w,h], R:[gap*2+w,top,w,h], stripY:top+h+8};
+}
+/* cover-fit, mirrored: a coaching feed that is not a mirror makes every
+   student correct the wrong way round */
+function coachVideoRect(r){
+  const v=COACH.video, vw=v.videoWidth||640, vh=v.videoHeight||480;
+  const s=Math.max(r[2]/vw,r[3]/vh), dw=vw*s, dh=vh*s;
+  const ox=r[0]+(r[2]-dw)/2, oy=r[1]+(r[3]-dh)/2;
+  ctx.save();
+  ctx.beginPath();ctx.rect(r[0],r[1],r[2],r[3]);ctx.clip();
+  ctx.translate(2*r[0]+r[2],0);ctx.scale(-1,1);
+  try{ctx.drawImage(v,ox,oy,dw,dh);}catch(_){}
+  ctx.restore();
+  return {ox:ox,oy:oy,dw:dw,dh:dh,flip:2*r[0]+r[2]};
+}
+function coachRender(now){
+  const p=coachPanes(), ref=COACH.ref, st=ref.steps[COACH.step];
+
+  /* left: the rig, looping this step's own segment of the clip */
+  const span=Math.max(st.end-st.start,0.4);
+  const t=st.start+(((now-COACH.loopT0)/1000)%span);
+  const vp=[p.L[0]/cv.width,p.L[1]/cv.height,p.L[2]/cv.width,p.L[3]/cv.height];
+  withViewport(vp,()=>{try{drawSkeleton(COACH.clip,t);}catch(e){}});
+  ctx.strokeStyle='rgba(20,20,18,.14)';ctx.lineWidth=1;
+  ctx.strokeRect(p.L[0]+.5,p.L[1]+.5,p.L[2]-1,p.L[3]-1);
+  coachPaneTag(p.L,'copy this','#2456D6');
+
+  /* right: you, with the tracked bones on top of you */
+  ctx.fillStyle='#EDEEE9';ctx.fillRect(p.R[0],p.R[1],p.R[2],p.R[3]);
+  if(COACH.video&&COACH.video.readyState>=2){
+    const m=coachVideoRect(p.R);
+    if(COACH.lm)coachOverlay(COACH.lm,m,p.R);
+    if(COACH.handLm)coachHandOverlay(COACH.handLm,m,p.R);
+  }
+  ctx.strokeStyle='rgba(20,20,18,.14)';ctx.lineWidth=1;
+  ctx.strokeRect(p.R[0]+.5,p.R[1]+.5,p.R[2]-1,p.R[3]-1);
+  /* the note goes in the strip, not here — a tag long enough to say "step
+     back, I can only see part of you" runs under the Live badge */
+  coachPaneTag(p.R,'you','#C93A2E');
+
+  coachStrip(p.stripY,st);
+}
+function coachPaneTag(r,text,color){
+  ctx.font='11px "IBM Plex Mono", monospace';
+  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  /* the Live badge lives in the board's top-right corner, so a long tag has
+     to be cut rather than allowed to run underneath it */
+  const room=r[2]-24;
+  while(text.length>4&&ctx.measureText(text).width>room)
+    text=text.slice(0,-2)+'…';
+  const w=ctx.measureText(text).width+14;
+  ctx.fillStyle='rgba(253,253,248,.9)';ctx.fillRect(r[0]+6,r[1]+6,w,18);
+  ctx.fillStyle=color;ctx.fillText(text,r[0]+13,r[1]+19);
+}
+/* The bones sit on the video because they come from the IMAGE landmarks;
+   the colours come from the WORLD ones. A joint whose measured angle is
+   outside the band for this step turns red and says by how much. */
+function coachOverlay(lm,m,r){
+  const sp=COACH.spec, JI={}; sp.joints.forEach((n,i)=>JI[n]=i);
+  const P=sp.joints.map(n=>{
+    const q=lm[sp.blazepose[n]];
+    return [m.flip-(m.ox+q.x*m.dw), m.oy+q.y*m.dh];
+  });
+  const inside=q=>q[0]>=r[0]&&q[0]<=r[0]+r[2]&&q[1]>=r[1]&&q[1]<=r[1]+r[3];
+  ctx.save();
+  ctx.beginPath();ctx.rect(r[0],r[1],r[2],r[3]);ctx.clip();
+  sp.bones.forEach(b=>{
+    const a=P[b[0]], c=P[b[1]];
+    if(!inside(a)&&!inside(c))return;
+    ctx.strokeStyle='rgba(253,253,248,.85)';ctx.lineWidth=6;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);ctx.stroke();
+    ctx.strokeStyle='#141412';ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);ctx.stroke();
+  });
+  /* one dot per measured joint, coloured by that joint's own error */
+  const d=(COACH.last&&COACH.last.deltas)||{};
+  /* mirroring means the fault reported for "elbow_r" belongs on the student's
+     LEFT elbow — draw it where the body actually is, not where the rig is */
+  const site=n=>COACH.mirror?sp.mirror[n]:n;
+  for(const n in sp.angles){
+    const j=JI[sp.angles[site(n)][1]];
+    if(j==null)continue;
+    const off=Math.abs(d[n]||0), q=P[j];
+    if(!inside(q))continue;
+    /* grey means "not being measured", not "correct" — a joint that dropped
+       out of view must not read as a pass */
+    ctx.fillStyle=!COACH.last?'#8A9086':off>0?'#C93A2E':'#1F9E7A';
+    ctx.beginPath();ctx.arc(q[0],q[1],off>0?6:4.5,0,7);ctx.fill();
+    if(off>6){
+      ctx.font='10px "IBM Plex Mono", monospace';
+      ctx.fillStyle='#C93A2E';ctx.textAlign='left';
+      ctx.fillText(Math.round(off)+'°',q[0]+9,q[1]+3);
+    }
+  }
+  ctx.restore();
+}
+/* The fingers, on the same footing as the body: green because they are not
+   being scored — coaching measures nine body angles, and handform owns the
+   fingers. They are drawn (and recorded) so the replay has a hand clip. */
+function coachHandOverlay(lm,m,r){
+  const P=lm.map(q=>[m.flip-(m.ox+q.x*m.dw), m.oy+q.y*m.dh]);
+  const inside=q=>q[0]>=r[0]&&q[0]<=r[0]+r[2]&&q[1]>=r[1]&&q[1]<=r[1]+r[3];
+  ctx.save();
+  ctx.beginPath();ctx.rect(r[0],r[1],r[2],r[3]);ctx.clip();
+  ctx.lineCap='round';
+  HAND_BONES.forEach(b=>{
+    const a=P[b[0]], c=P[b[1]];
+    if(!a||!c||(!inside(a)&&!inside(c)))return;
+    ctx.strokeStyle='rgba(253,253,248,.8)';ctx.lineWidth=4;
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);ctx.stroke();
+    ctx.strokeStyle='#1F9E7A';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);ctx.stroke();
+  });
+  ctx.fillStyle='#1F9E7A';
+  P.forEach((q,i)=>{if(!inside(q))return;
+    ctx.beginPath();ctx.arc(q[0],q[1],i%4===0?2.6:1.9,0,7);ctx.fill();});
+  ctx.restore();
+}
+function coachStrip(y,st){
+  const ref=COACH.ref, last=COACH.last, pass=ref.pass||78;
+  const x=10, w=cv.width-20, h=68;
+  ctx.fillStyle='rgba(253,253,248,.96)';ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='rgba(20,20,18,.12)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,w-1,h-1);
+
+  const sc=last?last.score:0;
+  const col=!last?'#8A9086':sc>=pass?'#1F9E7A':sc>=55?'#E08A2E':'#C93A2E';
+  ctx.font='600 30px "IBM Plex Sans", sans-serif';
+  ctx.fillStyle=col;ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  ctx.fillText(last?String(sc):'--',x+12,y+34);
+  ctx.font='10px "IBM Plex Mono", monospace';ctx.fillStyle='#8A9086';
+  ctx.fillText('/100',x+12,y+48);
+
+  /* the bar, with the pass mark on it, and the hold filling from the left
+     once you are over that mark — you can see the step about to tick over */
+  const bx=x+70, bw=w-84, by=y+12, bh=10;
+  ctx.fillStyle='#E4E5E0';ctx.fillRect(bx,by,bw,bh);
+  ctx.fillStyle=col;ctx.fillRect(bx,by,bw*Math.max(0,Math.min(sc,100))/100,bh);
+  ctx.fillStyle='#141412';ctx.fillRect(bx+bw*pass/100-1,by-3,2,bh+6);
+  const hold=Math.min(COACH.holdMs/((ref.hold||1.6)*1000),1);
+  if(hold>0){ctx.fillStyle='#1F9E7A';ctx.fillRect(bx,by+bh+3,bw*hold,3);}
+
+  ctx.font='12px "IBM Plex Sans", sans-serif';ctx.fillStyle='#141412';
+  const head='Step '+(COACH.step+1)+'/'+ref.steps.length+' — '+st.text;
+  ctx.fillText(head.length>78?head.slice(0,77)+'…':head,bx,y+38);
+
+  ctx.font='11px "IBM Plex Mono", monospace';
+  if(COACH.note){ctx.fillStyle='#C93A2E';ctx.fillText(COACH.note,bx,y+55);}
+  else if(last&&last.cues.length){
+    ctx.fillStyle='#C93A2E';
+    ctx.fillText(last.cues.map(c=>c.text+' ('+c.off+'°)').join('   ·   ')
+                 .slice(0,96),bx,y+55);
+  }else if(last){
+    ctx.fillStyle='#1F9E7A';
+    ctx.fillText(hold>0?'hold it…':'in range on every measured angle',bx,y+55);
+  }
+  /* what is being banked for the replay, so it is never a surprise at the end
+     that there was no hand in shot and therefore no hand clip */
+  ctx.textAlign='right';ctx.fillStyle='#8A9086';
+  ctx.fillText((COACH.mirror?'mirrored':'same side')+'  ·  '+COACH.fps+' fps'
+              +'  ·  rec '+COACH.recBody.length+'b/'+COACH.recHand.length+'h'
+              +(COACH.err?'  ·  '+COACH.err.slice(0,20):''),x+w-12,y+55);
+  ctx.textAlign='left';
+}
+/* What the tutor can see when a student interrupts mid-session. The phrasing
+   comes out of the same table coach.py ships, so the answer and the overlay
+   never disagree about which joint is wrong. */
+function coachContext(){
+  if(!COACH.on)return [];
+  const ref=COACH.ref, st=ref.steps[COACH.step], sp=COACH.spec;
+  const out=["LIVE COACHING: the student's camera is on and I am scoring their "
+            +"form against \""+(ref.title||'the reference motion')+"\"",
+             "current step "+(COACH.step+1)+"/"+ref.steps.length+": "+st.text,
+             "this step is judged on: "
+              +(st.key||[]).map(n=>sp.cues[n].label).join(', ')];
+  if(COACH.last&&COACH.last.seen){
+    out.push("their score right now: "+COACH.last.score+"/100"
+            +(COACH.mirror?" (mirrored, so their left copies my right)":""));
+    if(COACH.last.cues.length)
+      COACH.last.cues.forEach(c=>out.push("fault: "+c.label+" is "+c.off
+        +" degrees outside the target band — \""+c.text+"\""));
+    else out.push("no fault right now — inside tolerance on every measured angle");
+  }else out.push(COACH.note||"I cannot see them in frame at the moment");
+  out.push("the left half of the board is my rig performing this step on a "
+          +"loop; the right half is their camera with the tracked skeleton on it");
+  return out;
+}
+
+$('coach').onclick=()=>{COACH.on?coachStop():coachStart();};
+$('mirrorBtn').onclick=e=>{
+  COACH.mirror=!COACH.mirror;
+  e.target.textContent="Mirror: "+(COACH.mirror?"on":"off");
+  e.target.setAttribute('aria-pressed',COACH.mirror);
+  COACH.spokeText=""; COACH.cueText="";
+};
+/* the camera is not left running because somebody closed the tab */
+addEventListener('pagehide',coachRelease);
+
+/* ?preset=world|both|fix|move|curve|anim|learn — deep-link into a preset,
+   so a demo is one URL rather than one URL plus a click. */
+const PRESETS={world:["one 3D room (LineFORM + generated footage)",()=>HOW_WORLD],
+               both:["body skeleton and hand gestures together",()=>HOW_BOTH],
+               fix:["fixing a slipped bicycle chain",()=>FIX_CHAIN],
+               move:["how motion works (3D skeleton + gestures)",()=>HOW_MOVE],
+               curve:["actuated curve interfaces (LineFORM)",()=>HOW_CURVE],
+               anim:["how I animate",()=>HOW_ANIM],
+               learn:["how I learn (crawler + hivemind)",()=>HOW_LEARN]};
+/* ?mine=<youtube url> deep-links a mined lesson the same way, and
+   ?coach=<what to practise> opens straight into a live session — one URL
+   instead of a URL plus typing plus a click, which is also what makes the
+   camera path testable without a person in front of the machine. */
+(()=>{const q=new URLSearchParams(location.search);
+  const p=q.get("preset"), m=q.get("mine"), c=q.get("coach");
+  if(c){$('topic').value=c; setTimeout(coachStart,60); return;}
+  if(m){$('tube').value=m; setTimeout(()=>mineVideo(m),60); return;}
+  if(p&&PRESETS[p]){const[n,g]=PRESETS[p];setTimeout(()=>playPreset(n,g()),60);}})();
+
+$('lang').onclick=e=>{
+  lessonLang=lessonLang==="en"?"id":"en";
+  e.target.textContent=lessonLang.toUpperCase();
+  e.target.setAttribute('aria-pressed',lessonLang==="id");
+  chatMsg('sys',lessonLang==="id"
+    ?'&#9776; bahasa pelajaran: Indonesia — mulai pelajaran baru untuk menerapkannya'
+    :'&#9776; lesson language: English — start a new lesson to apply it');
+  withVoices(()=>voiceNote(true));       /* which voice will actually speak */
+};
+$('voice').onclick=e=>{voiceOn=!voiceOn;
+  e.target.textContent=voiceOn?"Voice on":"Voice off";
+  e.target.setAttribute('aria-pressed',voiceOn);
+  if(!voiceOn&&'speechSynthesis'in window){speechSynthesis.cancel();speaking=false;lipStop();}};
+clearBoard();
+</script>
+</body>
+</html>

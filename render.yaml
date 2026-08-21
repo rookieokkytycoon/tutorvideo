@@ -1,0 +1,19 @@
+# Render blueprint — deploy this repo with one click:
+# push to GitHub, then at dashboard.render.com choose "New +" -> "Blueprint",
+# pick the repo, and paste your API key when prompted.
+services:
+  - type: web
+    name: agentic-video-tutor
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT server:app
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # Render will ask you to paste it (kept secret)
+      - key: REPLICATE_API_TOKEN
+        sync: false          # optional — leave blank for sketch-only scenes
+      - key: VIDEO_MODEL
+        value: wan-video/wan-2.2-t2v-fast
+      - key: IMAGE_MODEL
+        value: black-forest-labs/flux-schnell

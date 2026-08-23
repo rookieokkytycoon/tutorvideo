@@ -4827,7 +4827,8 @@ $('coach').onclick=()=>{COACH.on?coachStop():coachStart();};
    across tracker flicker and learns their signature; the angle-band
    physics stays the judge. */
 const LNN={N:24,M:13,G:4,x:null,W:null,U:null,b:null,tau:null,A:null,
-           wo:null,bo:0,we:null,be:0,y:0,yEng:0,eta:0.02,seeded:false};
+           wo:null,bo:0,we:null,be:0,wp:null,bp:0,
+           y:0,yEng:0,yPred:0,z:null,eta:0.02,seeded:false};
 function _lnnRng(seed){let a=seed>>>0;return function(){
   a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
@@ -4846,19 +4847,37 @@ function lnnInit(){
      working? Taught by the tracker's own seen flag, it pauses the
      coaching clock when nobody is in front of the camera. */
   LNN.we=Array.from({length:N+M},()=>(r()*2-1)*0.1); LNN.be=0;
+  /* the third readout: OUTCOME PREDICTION — "will this round be hit?" —
+     taught only when the round resolves, by replaying its stored feature
+     vectors against the real result (lnnTeachOutcome). The network
+     experiments on its own forecasts and learns from being wrong. */
+  LNN.wp=Array.from({length:N+M},()=>(r()*2-1)*0.1); LNN.bp=0;
   try{                                /* the per-student readouts, earned */
-    const s=JSON.parse(localStorage.getItem('tutor_lnn_v3')||'null');
+    const s=JSON.parse(localStorage.getItem('tutor_lnn_v4')||'null');
     const okv=a=>Array.isArray(a)&&a.length===N+M&&a.every(Number.isFinite);
     if(s&&okv(s.wo)){LNN.wo=s.wo;LNN.bo=Number.isFinite(+s.bo)?+s.bo:0;}
     if(s&&okv(s.we)){LNN.we=s.we;LNN.be=Number.isFinite(+s.be)?+s.be:0;}
+    if(s&&okv(s.wp)){LNN.wp=s.wp;LNN.bp=Number.isFinite(+s.bp)?+s.bp:0;}
   }catch(_){}
   LNN.seeded=true;
 }
 function lnnSave(){
-  try{localStorage.setItem('tutor_lnn_v3',
-    JSON.stringify({wo:LNN.wo,bo:LNN.bo,we:LNN.we,be:LNN.be}));}catch(_){}
+  try{localStorage.setItem('tutor_lnn_v4',
+    JSON.stringify({wo:LNN.wo,bo:LNN.bo,we:LNN.we,be:LNN.be,
+                    wp:LNN.wp,bp:LNN.bp}));}catch(_){}
 }
-function lnnReset(){lnnInit();LNN.x.fill(0);LNN.y=0;LNN.yEng=0;}
+function lnnReset(){lnnInit();LNN.x.fill(0);LNN.y=0;LNN.yEng=0;LNN.yPred=0;}
+function lnnTeachOutcome(zs,label){
+  /* the delayed-label update: replay a round's feature vectors against
+     how it actually ended — one cross-entropy step per vector */
+  lnnInit();
+  for(const z of zs){
+    let o=LNN.bp; for(let i=0;i<z.length;i++)o+=LNN.wp[i]*z[i];
+    const g=LNN.eta*(label-_lnnSig(o));
+    for(let i=0;i<z.length;i++)LNN.wp[i]+=g*z[i];
+    LNN.bp+=g;
+  }
+}
 const _lnnSig=v=>1/(1+Math.exp(-v));
 function lnnStep(u,dt,teach,teachEng){
   lnnInit();
@@ -4881,6 +4900,8 @@ function lnnStep(u,dt,teach,teachEng){
   const y=_lnnSig(o); LNN.y=y;
   let e=LNN.be; for(let i=0;i<z.length;i++)e+=LNN.we[i]*z[i];
   LNN.yEng=_lnnSig(e);
+  let pr=LNN.bp; for(let i=0;i<z.length;i++)pr+=LNN.wp[i]*z[i];
+  LNN.yPred=_lnnSig(pr); LNN.z=z;
   if(teach!=null){
     /* online adaptation — cross-entropy gradient, which does not vanish
        when the readout is confidently wrong (delta rule saturates) */
@@ -4912,6 +4933,7 @@ const VERIFY={on:false,strict:false,active:false,busy:false,
   ref:null,steps:[],refIdx:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
   live:null,lm:null,handLm:null,handPrev:null,handPrevAt:0,handScore:0,
   clip:null,handClip:null,loopT0:0,
+  zbuf:[],predLow:0,earlyHinted:false,
   score:0,cues:[],per:[],done:null,round:0,log:[]};
 /* The adaptive part, in the spirit of liquid networks: the pass threshold
    per action is a parameter that keeps adapting to THIS student while they
@@ -4929,6 +4951,9 @@ function verifyEscalate(now){
   /* strict coaching: a timed-out round does NOT move on — it eases the
      band, resets the clock and sends the tracked faults to the coach */
   VERIFY.round++; VERIFY.stepT0=now; VERIFY.hold=0;
+  if(VERIFY.zbuf.length){lnnTeachOutcome(VERIFY.zbuf,0);   /* a miss, learned */
+    VERIFY.zbuf=[];}
+  VERIFY.predLow=0; VERIFY.earlyHinted=false;
   const key=(VERIFY.steps[VERIFY.si]||{}).text||'';
   VERIFY_ADAPT.set(key,Math.min(12,(VERIFY_ADAPT.get(key)||0)+3));
   if(VERIFY.round===2)verifyStudy(key);  /* two misses: go and STUDY it */
@@ -5083,6 +5108,7 @@ async function verifyChapter(sc){
     VERIFY.hold=0; VERIFY.lastVT=-1; VERIFY.live=null; VERIFY.lm=null;
     VERIFY.handLm=null; VERIFY.handPrev=null; VERIFY.handScore=0;
     VERIFY.score=0; VERIFY.cues=[]; VERIFY.round=0;
+    VERIFY.zbuf=[]; VERIFY.predLow=0; VERIFY.earlyHinted=false;
     VERIFY.per=steps.map(()=>({best:0,ok:false,rounds:0}));
     lnnReset();               /* fresh liquid state, same earned readout */
     VERIFY.lastT=VERIFY.stepT0=performance.now();
@@ -5118,6 +5144,12 @@ async function verifyChapter(sc){
 }
 function verifyNext(hit){
   const per=VERIFY.per, key=(VERIFY.steps[VERIFY.si]||{}).text||'';
+  /* the round resolved: teach the outcome predictor what this ending's
+     trajectory looked like — the self-experimentation closing over the
+     network's own forecasts */
+  if(VERIFY.zbuf.length){lnnTeachOutcome(VERIFY.zbuf,hit?1:0);
+    VERIFY.zbuf=[];}
+  VERIFY.predLow=0; VERIFY.earlyHinted=false;
   per[VERIFY.si].ok=per[VERIFY.si].ok||hit;
   per[VERIFY.si].rounds=VERIFY.round;
   /* a clean first-round pass earns the band back — adaptation flows both
@@ -5202,6 +5234,22 @@ function verifyTick(now){
         lnnInputs(deltas,sc100,seen,VERIFY.hold/VERIFY_HOLD_MS,
                   st.kind==='hand'),
         (now-VERIFY.lastT)/1000,landing?1:0,seen?1:0);
+      /* the round's trajectory is banked so the outcome predictor can be
+         taught what THIS ending looked like when the round resolves */
+      if(LNN.z){VERIFY.zbuf.push(LNN.z.slice());
+        if(VERIFY.zbuf.length>150)VERIFY.zbuf.shift();}
+      /* APPLIED: a confident predicted miss brings the coach in EARLY —
+         five predicted-low seconds on an engaged student, and the hint
+         fires now instead of after the full timeout */
+      if(VERIFY.strict&&!landing&&seen&&LNN.yEng>=0.35&&LNN.yPred<0.25)
+        VERIFY.predLow+=now-VERIFY.lastT;
+      else VERIFY.predLow=0;
+      if(VERIFY.predLow>5000&&now-VERIFY.stepT0>6000&&!VERIFY.earlyHinted){
+        VERIFY.earlyHinted=true;
+        chatMsg('sys','&#9678; the network predicts this round will miss — '
+               +'coaching early');
+        verifyCoachHint(st.text);
+      }
       if(landing){VERIFY.hold+=now-VERIFY.lastT;
         if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
       }else if(conf<0.6)VERIFY.hold=0;
@@ -5386,6 +5434,8 @@ function verifyRender(now){
   ctx.fillText('liquid '+LNN.y.toFixed(2),bx,y0+78);
   ctx.fillText('engaged '+LNN.yEng.toFixed(2)
     +(LNN.yEng<0.35?' — clock paused':''),bx+130,y0+78);
+  ctx.fillText('will land '+Math.round(LNN.yPred*100)+'%'
+    +(VERIFY.earlyHinted?' — coached early':''),bx+270,y0+78);
 }
 /* ============ the knowledge quiz ============
    Camera verification checks the BODY learned the chapter; the quiz checks

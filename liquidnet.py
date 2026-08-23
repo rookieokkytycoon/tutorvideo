@@ -96,13 +96,25 @@ class LTC:
         # instead of burning rounds against an empty room.
         self.we = [(r() * 2 - 1) * 0.1 for _ in range(n + m)]
         self.be = 0.0
+        # the third readout: OUTCOME PREDICTION — "will this round be hit?"
+        # It cannot be taught per frame (the label arrives only when the
+        # round resolves), so the loop keeps the round's feature vectors
+        # and replays them against the actual outcome via teach_outcome():
+        # the network experiments on its own forecasts and learns from
+        # being wrong. Applied: a confident predicted miss triggers the
+        # coach EARLY instead of waiting out the timeout.
+        self.wp = [(r() * 2 - 1) * 0.1 for _ in range(n + m)]
+        self.bp = 0.0
         self.y = 0.0
         self.y_eng = 0.0
+        self.y_pred = 0.0
+        self.z = [0.0] * (n + m)      # the last feature vector, replayable
 
     def reset(self):
         self.x = [0.0] * self.n
         self.y = 0.0
         self.y_eng = 0.0
+        self.y_pred = 0.0
 
     def _features(self, u):
         """The readout's view: [gain*x ; u] — state plus skip connection."""
@@ -123,8 +135,10 @@ class LTC:
             self.x[i] = ((self.x[i] + dt * f[i] * self.A[i])
                          / (1 + dt * (1 / self.tau[i] + f[i])))
         z = self._features(u)
+        self.z = z
         self.y = _sig(self.bo + sum(w * v for w, v in zip(self.wo, z)))
         self.y_eng = _sig(self.be + sum(w * v for w, v in zip(self.we, z)))
+        self.y_pred = _sig(self.bp + sum(w * v for w, v in zip(self.wp, z)))
         if teach is not None:
             # online readout adaptation — cross-entropy gradient, which
             # does not vanish when the readout is confidently wrong (the
@@ -137,6 +151,17 @@ class LTC:
             self.we = [w + g * v for w, v in zip(self.we, z)]
             self.be += g
         return self.y
+
+    def teach_outcome(self, zs, label):
+        """The delayed-label update: replay a round's stored feature
+        vectors against how the round actually ended (1 hit, 0 missed).
+        One cross-entropy step per vector — the self-experimentation loop
+        closing over the network's own predictions."""
+        for z in zs:
+            p = _sig(self.bp + sum(w * v for w, v in zip(self.wp, z)))
+            g = self.eta * (label - p)
+            self.wp = [w + g * v for w, v in zip(self.wp, z)]
+            self.bp += g
 
     def tau_effective(self, u):
         """The liquid property, measurable: tau/(1 + tau*f) per neuron."""
@@ -195,6 +220,31 @@ def _self_test():
         (e_good, e_bad, e_gone)      # engaged whether right or wrong;
     #                                  disengaged only when absent
 
+    # 3b. the outcome predictor learns from its own forecasts: rounds where
+    # the deviations shrink end hit (label 1), rounds stuck high end missed
+    # (label 0). Labels arrive only at round end and are replayed over the
+    # round's stored feature vectors — after training, the predictor
+    # separates the two MID-round, early enough to act on.
+    def round_(net_, kind, frames=60, teach=True):
+        zs = []
+        for i in range(frames):
+            t = i / frames
+            dev = (0.6 * (1 - t) if kind == "approach" else 0.7)
+            u = [dev] * 9 + [1 - dev, 1.0, t if kind == "approach" else 0.0,
+                             0.0]
+            net_.step(u, 1 / 30)
+            zs.append(list(net_.z))
+        if teach:
+            net_.teach_outcome(zs, 1.0 if kind == "approach" else 0.0)
+    for _ in range(60):
+        round_(net, "approach")
+        round_(net, "stuck")
+    round_(net, "approach", frames=30, teach=False)   # judged MID-round
+    p_hit = net.y_pred
+    round_(net, "stuck", frames=30, teach=False)
+    p_miss = net.y_pred
+    assert p_hit > 0.65 and p_miss < 0.35, (p_hit, p_miss)
+
     # 4. flicker robustness: confidence coasts through a two-frame tracker
     # dropout instead of collapsing — the whole reason the loop wants a
     # liquid state rather than an instantaneous threshold
@@ -209,6 +259,7 @@ def _self_test():
           f"tau busy {t_busy:.2f}s < quiet {t_quiet:.2f}s, "
           f"split good={y_good:.2f}/bad={y_bad:.2f}, "
           f"engagement {e_good:.2f}/{e_bad:.2f}/gone {e_gone:.2f}, "
+          f"outcome mid-round hit={p_hit:.2f}/miss={p_miss:.2f}, "
           f"state bounded, flicker bridged at y={net.y:.2f}")
 
 

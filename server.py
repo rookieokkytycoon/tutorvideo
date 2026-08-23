@@ -38,6 +38,7 @@ import handform
 import world
 import coach
 import openclaw
+import pairing
 import posetrack
 import physics
 import screenread
@@ -1785,6 +1786,76 @@ Rules:
 - Everything spoken ("narration") is conversational, as a tutor would say it aloud."""
 
 
+MAX_BOOK_CHUNKS = 4            # paired extraction runs per chunk — bound it
+BOOK_CHUNK_CHARS = 12_000      # roughly what one MINE_SYS call reads well
+
+
+def _book_chunks(text):
+    """Split extracted book text into procedure-sized chunks on page marks,
+    so the detailed step extraction reads the WHOLE book a piece at a time
+    instead of skimming one oversized prompt."""
+    pages = re.split(r"(?=\[page \d+\])", text)
+    chunks, cur = [], ""
+    for pg in pages:
+        if cur and len(cur) + len(pg) > BOOK_CHUNK_CHARS:
+            chunks.append(cur)
+            cur = pg
+        else:
+            cur += pg
+    if cur.strip():
+        chunks.append(cur)
+    return chunks[:MAX_BOOK_CHUNKS]
+
+
+def _book_detailed_steps(name, text, book_title):
+    """The Mine pipeline, run over the book — with self-experimentation.
+
+    Each chunk goes through pairing.extract_pair: a fast reader and an
+    adversarial evidence-first reader on a stronger model extract the steps
+    INDEPENDENTLY, reconcile() marks every step agreed/contested, and
+    ingest_paired writes the result into the hivemind with confirmations on
+    the corroborated steps and review-queue corrections on the contested
+    ones. The corroborated detailed steps come back as playable chapters —
+    the same hand/skeleton/compose walkthrough a mined YouTube video gets.
+
+    -> (chapters, summary_dict). Never raises; a failed chunk is skipped.
+    """
+    chapters, agg = [], {"agreed": 0, "only_a": 0, "only_b": 0}
+    steps_total, reader, failed = 0, "", 0
+    for i, chunk in enumerate(_book_chunks(text)):
+        header = (f"Book: {book_title or name} (part {i + 1})\n"
+                  "This is a WRITTEN BOOK, not a video transcript. "
+                  "Omit the \"at\" field entirely. Extract EVERY procedure "
+                  "this part actually states, step by step, in its order.")
+        try:
+            a, b, errs = pairing.extract_pair(
+                header, f"Book text:\n{chunk}", API_KEY)
+            doc, verdicts = pairing.reconcile(a, b)
+            doc = openclaw._finish(doc, book_title or name,
+                                   {"url": "", "source": f"book: {name}"})
+            for s in doc["steps"]:
+                s["at"] = ""               # a book has nothing to seek to
+            reader = ("deepseek" if errs.get("provider") == "deepseek"
+                      else pairing.PAIR_B_MODEL)
+            res = pairing.ingest_paired(HM, doc, verdicts, None,
+                                        author=reader)
+            for k in agg:
+                agg[k] += res["verdicts"].get(k, 0)
+            steps_total += len(doc["steps"])
+            chapters += openclaw.doc_to_lesson(doc)
+        except Exception:
+            failed += 1
+            continue
+    if steps_total:
+        HM.save(GRAPH_PATH)
+    total = max(sum(agg.values()), 1)
+    return chapters, {"steps": steps_total,
+                      "agreed": agg["agreed"],
+                      "contested": agg["only_a"] + agg["only_b"],
+                      "agreement": round(agg["agreed"] / total, 3),
+                      "second_reader": reader, "failed_chunks": failed}
+
+
 def _book_text(data):
     """PDF bytes -> (text, pages_read). Text-layer only — a scanned book with
     no text layer comes back empty and is reported as such, not OCR'd."""
@@ -1875,10 +1946,30 @@ def book_lesson():
     if ingested:
         HM.save(GRAPH_PATH)
 
+    # the Mine treatment, book edition: paired readers extract EVERY stated
+    # procedure step by step, and the corroborated ones become a detailed
+    # walkthrough appended after the course chapters — same conversation
+    # video, finer grain, with the disagreements queued for review
+    detail_ch, detailed = _book_detailed_steps(
+        name, text, str(plan.get("title") or ""))
+    if detail_ch:
+        chapters.append({
+            "mode": "anim", "seconds": 8, "title": "step by step",
+            "narration": "Now the fine grain — every step the book actually "
+                         "states, checked by two independent readers.",
+            "steps": [{"beat": "the walkthrough begins", "els": [
+                {"type": "text", "x": 25, "y": 30, "text": "step by step",
+                 "color": "blue", "in": "fade"},
+                {"type": "box", "x": 25, "y": 20, "w": 30, "h": 8,
+                 "label": f"{detailed['steps']} steps, "
+                          f"{detailed['agreed']} corroborated",
+                 "color": "green", "in": "pop"}]}]})
+        chapters += detail_ch[:16]
+
     return jsonify({"title": str(plan.get("title") or name)[:160],
                     "topic": str(plan.get("topic") or "")[:200],
                     "chapters": chapters, "ingested": ingested,
-                    "pages": pages})
+                    "detailed": detailed, "pages": pages})
 
 
 @app.post("/api/track")

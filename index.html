@@ -3658,6 +3658,12 @@ $('bookfile').onchange=async e=>{
         +`${d.chapters.length} chapters queued into the running lesson`
         +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
           +`interrupt any time and the answer comes from the book`:''));
+      if(d.detailed&&d.detailed.steps)
+        chatMsg('sys','&#9096; self-experiment: two independent readers '
+          +'extracted '+d.detailed.steps+' detailed steps — '
+          +Math.round((d.detailed.agreement||0)*100)+'% corroborated'
+          +(d.detailed.contested?', '+d.detailed.contested
+            +' contested step(s) queued for review in the hivemind':''));
       $('status').textContent="";$('status').className='status';
       if(!lessonRunning)runLesson(at);   /* holding live: play the book now */
       return;
@@ -3670,6 +3676,12 @@ $('bookfile').onchange=async e=>{
       +`${scenes.length} chapters`
       +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
         +`interrupt any time and the answer comes from the book`:''));
+    if(d.detailed&&d.detailed.steps)
+      chatMsg('sys','&#9096; self-experiment: two independent readers '
+        +'extracted '+d.detailed.steps+' detailed steps — '
+        +Math.round((d.detailed.agreement||0)*100)+'% corroborated'
+        +(d.detailed.contested?', '+d.detailed.contested
+          +' contested step(s) queued for review in the hivemind':''));
     $('status').textContent="";$('status').className='status';
     if(voiceOn)withVoices(()=>voiceNote(true));
     await runLesson(0);

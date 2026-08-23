@@ -44,6 +44,28 @@ import physics
 import screenread
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv():
+    """A .env beside the server fills in what the environment left unset —
+    real deploys (Render, Docker) set env vars directly and win; this makes
+    a bare `python server.py` on a laptop work without exporting anything."""
+    path = os.path.join(ROOT, ".env")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except OSError:
+        pass
+
+
+_load_dotenv()
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 MAX_BODY = 60_000          # guardrail: nobody stuffs a novel through your key

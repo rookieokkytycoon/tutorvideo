@@ -948,6 +948,21 @@ function b64bytes(s){
 }
 
 /* --- drawing ---------------------------------------------------------- */
+/* Clips are solved at the server's fps; the display runs at its own. Every
+   renderer interpolates between the two nearest solved frames, so the rigs
+   play glass-smooth at ANY refresh rate instead of stepping at clip rate. */
+function frameAt(clip,t){
+  const n=clip.frames.length;
+  const f=Math.max(0,Math.min(n-1.0001,t*clip.fps));
+  const fi=Math.floor(f), u=f-fi, nx=Math.min(n-1,fi+1);
+  return {fi:fi,u:u,nx:nx};
+}
+function ipPoints(a,b,u){return u?a.map((p,i)=>V.lerp(p,b[i],u)):a;}
+function ipAngles(ch,fi,u){
+  const a=ch.angles[fi]; if(!u)return a;
+  const b=ch.angles[Math.min(ch.angles.length-1,fi+1)]||a;
+  return a.map((x,j)=>x+((b[j]===undefined?x:b[j])-x)*u);
+}
 let showVectors=true;
 function strokePath(pts,cam,color,lw,halo){
   const pass=(c,w)=>{ctx.strokeStyle=c;ctx.lineWidth=w;ctx.lineCap='round';ctx.lineJoin='round';
@@ -1129,14 +1144,15 @@ function _mfLobe(c,rx,ry,rot,active,heat){
 function _mfDepth(p,cam){
   return project(WX.on?WX.xf(p):p,WX.on?WX.cam:cam)[2];
 }
-function drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn){
+function drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn,u){
   const P=nm=>pos[JI[nm]];
   /* FK every chain so the flesh follows the servo lag, not straight bones */
   const CH={};
   for(const k in clip.chains){
     const ch=clip.chains[k]; if(!ch.angles||!ch.angles[fi])continue;
     const base=paths[k]?paths[k][0]:[0,0,0];
-    CH[k]=fkChain(ch.angles[fi],ch.device,base,paths[k]&&chainHeading(paths[k]));
+    CH[k]=fkChain(ipAngles(ch,fi,u||0),ch.device,base,
+                  paths[k]&&chainHeading(paths[k]));
   }
   for(const k in paths)if(!CH[k])CH[k]=paths[k];
   const S=pts=>pts.map(p=>pxOf(p,cam));
@@ -1231,9 +1247,9 @@ function drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn){
 }
 function drawSkeleton(clip,t){
   const cam=clip.camera, n=clip.frames.length;
-  const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
+  const {fi,u,nx}=frameAt(clip,t);
   const JI={}; clip.joints.forEach((nm,i)=>JI[nm]=i);
-  const pos=clip.frames[fi], vel=clip.vectors[fi];
+  const pos=ipPoints(clip.frames[fi],clip.frames[nx],u), vel=clip.vectors[fi];
   if(showVectors)drawFlow(clip,fi,cam);
 
   /* ground shadow so the body is standing on something, not floating.
@@ -1247,11 +1263,11 @@ function drawSkeleton(clip,t){
   const burn=Array.isArray(clip.muscles)&&clip.muscles.length
     ?muscleRegions(clip.muscles):null;
   if(burn){
-    drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn);
+    drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn,u);
   }else for(const k in clip.chains){
     const ch=clip.chains[k]; if(!ch.angles||!ch.angles[fi])continue;
     const base=paths[k]?paths[k][0]:[0,0,0];
-    const pts=fkChain(ch.angles[fi],ch.device,base,paths[k]&&chainHeading(paths[k]));
+    const pts=fkChain(ipAngles(ch,fi,u),ch.device,base,paths[k]&&chainHeading(paths[k]));
     strokePath(pts,cam,'#141412',D(k.startsWith('arm')?4.2:3.4),true);
     ctx.fillStyle='#2456D6';                       /* one dot per servo */
     pts.forEach((p,i)=>{if(i===0||i===pts.length-1)return;
@@ -1314,8 +1330,8 @@ function drawHandClip(clip,t){
   /* Five finger chains, drawn from the servo angles the way the body is.
      The hand is ~18cm so the camera sits close; everything else is shared. */
   const cam=clip.camera, n=clip.frames.length;
-  const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
-  const pts=clip.frames[fi], vel=clip.vectors[fi];
+  const {fi,u,nx}=frameAt(clip,t);
+  const pts=ipPoints(clip.frames[fi],clip.frames[nx],u), vel=clip.vectors[fi];
   if(showVectors)drawFlow(clip,fi,cam);
 
   /* palm first, as a filled quad, so fingers read as attached to something */
@@ -1368,8 +1384,8 @@ function drawHandClip(clip,t){
 function drawLineformClip(clip,t){
   const cam=clip.camera||{yaw:0.5,pitch:0.12,dist:3.0,target:[0,0.9,0],fov:40};
   const n=clip.frames.length;
-  const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
-  const pts=clip.frames[fi];
+  const {fi,u,nx}=frameAt(clip,t);
+  const pts=ipPoints(clip.frames[fi],clip.frames[nx],u);
   const foot=pxOf([0,0,0],cam), sc=WX.on?pxPerM([0,0,0],cam)*0.1:sscale();
   if(!WX.on||!WX.bound){                /* a chain wrapped on a limb has no
                                            floor under it to cast onto */
@@ -3542,9 +3558,12 @@ async function runLesson(startAt=0){
   }catch(e){
     $('status').textContent=e.message;$('status').className='status err';
   }
-  lessonRunning=false; player.active=false; setBadge('');
+  lessonRunning=false; player.active=false;
+  setBadge(LIVE.on?'live':'');   /* a followed stream keeps the session live */
   if(lessonAbort){lessonAbort=false;return;}      /* something else is starting */
-  if(pendingSeek!=null){const s=pendingSeek;pendingSeek=null;runLesson(s);}
+  if(pendingSeek!=null){const s=pendingSeek;pendingSeek=null;runLesson(s);return;}
+  if(LIVE.on)chatMsg('sys','&#9679; holding live — the lesson resumes when '
+                    +'the stream teaches its next chapter');
 }
 async function startLesson(){
   if(answering){                       /* mid-answer: say so instead of nothing */
@@ -3614,7 +3633,12 @@ $('bookfile').onchange=async e=>{
   if(answering){$('status').textContent="Finishing an answer first — try again in a second";
     $('status').className='status busy';return;}
   if(COACH.on)await coachStop();
-  if(lessonRunning){chatMsg('sys','&#9632; stopped the lesson that was playing');
+  /* a book handed over MID-LESSON (or while following a stream) joins the
+     conversation instead of replacing it: its chapters queue into the same
+     playing lesson, one continuous agentic video from every source */
+  const merging=(lessonRunning||LIVE.on)&&scenes.length>0;
+  if(lessonRunning&&!merging){
+    chatMsg('sys','&#9632; stopped the lesson that was playing');
     await stopLesson();}
   $('bookBtn').disabled=true;
   $('status').textContent=`Reading "${file.name}" — extracting the book and `
@@ -3626,6 +3650,18 @@ $('bookfile').onchange=async e=>{
     const d=await r.json();
     if(d.disabled)throw new Error("book upload needs an API key on the server ("+(d.why||"")+")");
     if(!r.ok||!d.chapters)throw new Error(d.error?d.error.message:"the book could not be read");
+    if(merging){
+      const at=scenes.length;
+      scenes.push(...d.chapters.map(prepScene));
+      renderSceneList(); renderTimeline();
+      chatMsg('sys',`&#128214; "${d.title}" — ${d.pages} pages read, `
+        +`${d.chapters.length} chapters queued into the running lesson`
+        +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
+          +`interrupt any time and the answer comes from the book`:''));
+      $('status').textContent="";$('status').className='status';
+      if(!lessonRunning)runLesson(at);   /* holding live: play the book now */
+      return;
+    }
     topicNow=d.topic||d.title; $('topic').value=topicNow;
     $('chat').innerHTML=""; qaHistory=[]; currentScene=-1;
     scenes=d.chapters.map(prepScene);
@@ -3948,6 +3984,15 @@ async function livePoll(first){
         chatMsg('sys','&#9679; live: '+d.chapters.length+' new chapter(s) '
                +'from the stream queued into this lesson — its steps are in '
                +'the hivemind, so Ask knows them already');
+      }else if(scenes.length){
+        /* the lesson finished while the stream kept talking — the new
+           chapters continue the SAME lesson, they do not start a new one */
+        const at=scenes.length;
+        scenes.push(...d.chapters.map(prepScene));
+        renderSceneList();renderTimeline();
+        chatMsg('sys','&#9679; live: the stream taught '+d.chapters.length
+               +' more chapter(s) — resuming');
+        runLesson(at);
       }else{
         chatMsg('sys','&#9679; live: the stream\'s first '+d.chapters.length
                +' chapter(s) are ready — playing');

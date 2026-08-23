@@ -240,6 +240,8 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
              style="flex:1;min-width:0;padding:9px 11px;border:1px solid #DCDCD2;
                     border-radius:8px;font:inherit;font-size:13px;background:#FDFDF8">
       <button class="big ghost" id="mine">Mine it</button>
+      <button class="big ghost" id="liveBtn" aria-pressed="false"
+              title="Follow a livestream as it happens: every half-minute the new part of its transcript is mined into fresh chapters, appended to the playing lesson, and its procedures join the hivemind — the stream becomes a tutorial while it is still streaming.">Follow live</button>
       <button class="big ghost" id="track" aria-pressed="false"
               title="Track the real person in the video with BlazePose and MediaPipe Hands, instead of synthesising the motion from the transcript">Track: off</button>
     </div>
@@ -408,7 +410,7 @@ A chapter of abstract structure instead uses the shape mode, which is the OLD de
 ${ANIM_LANG}
 Four other modes exist for when a diagram is the wrong tool:
 - "hand": a close-up 3D hand — 21 tracked landmarks, five finger chains — demonstrating the actual hand movements of a repair, with the gesture named and the finger curl read out live. Set "hand_steps" to 2-5 SHORT imperative actions that START WITH THE VERB ("Pinch the tab and peel it back", "Grip the cap and twist counter-clockwise", "Press the tab until it clicks"), and omit "steps". THIS IS THE BEST MODE FOR SHOWING SOMEONE HOW TO FIX SOMETHING — hands are what actually do a repair, and the student can ask about the grip and get an answer about the grip.
-- "skeleton": the whole body performing the task, with gesture tracking and motion vectors. Set "motion_steps" the same way. Use it when the WHOLE BODY matters (posture, reach, a two-handed lift); use "hand" when the fingers matter, which for most repairs they do. When the task is an EXERCISE or athletic movement, also set "muscles":["glutes","quads",...] (lowercase common names: glutes, quads, hamstrings, calves, core, back, chest, shoulders, biceps, triceps, neck) — the figure is then drawn as an anatomy body, individual muscle bellies with fiber striations, and the named groups burn red-orange while they work, brighter the faster they move. For a fitness topic this is THE mode: one exercise per chapter, its reps and form cues as motion_steps, its working muscles named.
+- "skeleton": the whole body performing the task, with gesture tracking and motion vectors. Set "motion_steps" the same way. Use it when the WHOLE BODY matters (posture, reach, a two-handed lift); use "hand" when the fingers matter, which for most repairs they do. When the task is an EXERCISE or athletic movement, also set "muscles":["glutes","quads",...] (lowercase common names: glutes, quads, hamstrings, calves, core, back, chest, shoulders, biceps, triceps, neck) — the figure is then drawn as an anatomy body, individual muscle bellies with fiber striations, and the named groups burn red-orange while they work, brighter the faster they move. For a fitness topic, one exercise per chapter with its reps and form cues as motion_steps and its working muscles named — and when a paid generation is justified, make that chapter "hybrid" instead, with a video_prompt beginning with this EXACT style sentence in every such chapter so the lesson looks like one production: "Smooth 3D-rendered fitness anatomy animation, matte white 3D figure with sculpted muscle definition, the working muscles glowing red-orange, modern gym with polished wooden floor and a large ocean-view window, soft studio lighting, slow orbiting camera, seamless loop, no text." followed by one sentence naming the exercise and equipment, and STILL carrying motion_steps and muscles so the anatomy figure performs it whenever video is off or fails.
 - "lineform": an actuated curve interface — a chain of servo motors that bends itself into shapes. Set "shapes" to 2-4 of: curve, helix, surface, solid, phone, wristband, lamp, ruler, slider, data. Use it to show how one physical line can display a curve, a surface, a solid or an icon.
 - "compose": TWO OR THREE of the above side by side on one timeline — the board splits into panes that all play together. Set "parts" to 2-3 of {"kind":"hand","steps":[...]}, {"kind":"skeleton","steps":[...]}, {"kind":"lineform","shapes":[...]}, each with an optional short "title". This is the RIGHT MODE whenever a step has both a whole-body component and a fingers component — "brace the wheel with your body while your fingers seat the chain" — because the student can watch the posture and the grip at the same time instead of choosing. Example: {"mode":"compose","seconds":12,"parts":[{"kind":"skeleton","steps":["Brace the wheel against your knee"],"title":"posture"},{"kind":"hand","steps":["Pinch the chain onto the teeth"],"title":"grip"}]}
 - "world": ONE 3D room instead of panes — the strongest mode when WHERE things are is part of the lesson. Set "actors" to 1-3 of {"kind":"skeleton","steps":[...]}, {"kind":"hand","steps":[...]}, {"kind":"lineform","shapes":[...]}, each optionally with "title". They stand in one space at real scale, so they occlude each other; a hand and a body are automatically the SAME person's hand. Add "wrap":true to a lineform actor and the servo chain bandages itself around the moving forearm — that is the paper's constraint, and it cannot be shown in a pane. Add "video_prompt" and the diffusion footage plays on a screen hanging in the room instead of behind everything. Better still, set "step_videos":true and EVERY step gets its own generated clip, cut onto that screen exactly when the rig performs it — real footage of the pinch playing behind the servo chain doing the pinch. Only do that when seeing the real thing matters, because it is one paid generation per step (max 4); you may instead write the prompts yourself as "step_videos":["one dense cinematic sentence for step 1", "...step 2"]. The camera moves on its own shot list, cutting close for finger work and wide for whole-body work, and the student can drag it. Example: {"mode":"world","seconds":15,"actors":[{"kind":"skeleton","title":"posture","steps":["Brace the wheel against your knee"]},{"kind":"hand","title":"grip","steps":["Pinch the chain onto the teeth"]},{"kind":"lineform","title":"target shape","shapes":["curve","wristband"],"wrap":true}]}
@@ -1091,14 +1093,22 @@ function _mfPaint(shape,sp,ns,wOf,active,heat){
   /* fiber striations along the belly — what makes it read as muscle */
   ctx.strokeStyle=active?'rgba(122,26,12,.4)':'rgba(120,115,105,.3)';
   ctx.lineWidth=D(1);
-  [-0.5,0,0.5].forEach(f=>{
-    ctx.beginPath();
+  const along=(f,draw)=>{ctx.beginPath();
     for(let i=0;i<sp.length;i++){
-      const t=i/(sp.length-1), w=wOf(t)*f*0.62;
+      const t=i/(sp.length-1), w=wOf(t)*f;
       const x=sp[i][0]+ns[i][0]*w, y=sp[i][1]+ns[i][1]*w;
-      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
-    }
-    ctx.stroke();});
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+    ctx.stroke();};
+  [-0.31,-0.09,0.12].forEach(f=>along(f));
+  /* specular ridge up one flank — the rounded-3D read, not a flat cutout */
+  ctx.strokeStyle=active?'rgba(255,214,196,.38)':'rgba(255,255,255,.55)';
+  ctx.lineWidth=D(2.4); along(0.42);
+  /* ambient occlusion where the belly attaches — muscles sit IN a body */
+  [[sp[0],wOf(0)],[sp[sp.length-1],wOf(1)]].forEach(([p,w])=>{
+    const g=ctx.createRadialGradient(p[0],p[1],0,p[0],p[1],Math.max(w*1.1,2));
+    g.addColorStop(0,'rgba(40,30,25,.20)');g.addColorStop(1,'rgba(40,30,25,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(p[0],p[1],Math.max(w*1.1,2),0,7);
+    ctx.fill();});
 }
 function _mfLobe(c,rx,ry,rot,active,heat){
   if(active&&heat>0.2){ctx.save();
@@ -1111,6 +1121,10 @@ function _mfLobe(c,rx,ry,rot,active,heat){
   ctx.beginPath();ctx.ellipse(c[0],c[1],rx,ry,rot||0,0,7);ctx.fill();
   if(active&&heat>0.2)ctx.restore();
   ctx.strokeStyle='rgba(55,50,45,.5)';ctx.lineWidth=D(1.2);ctx.stroke();
+  /* specular glint on the upper-left of the lobe — the 3D-ball read */
+  ctx.fillStyle='rgba(255,255,255,.32)';
+  ctx.beginPath();ctx.ellipse(c[0]-rx*0.34,c[1]-ry*0.38,rx*0.3,ry*0.22,
+                              rot||0,0,7);ctx.fill();
 }
 function _mfDepth(p,cam){
   return project(WX.on?WX.xf(p):p,WX.on?WX.cam:cam)[2];
@@ -3374,7 +3388,10 @@ function coerceMode(sc){
     sc.mode="anim";
   }
   if(sc.mode==="hybrid"&&!videoEnabled)
-    sc.mode=(imageEnabled&&(sc.image_prompt||sc.video_prompt))?"photo":"anim";
+    /* an exercise chapter carries its own reps — the anatomy figure
+       performs it, which beats a still of it every time */
+    sc.mode=(sc.motion_steps&&sc.motion_steps.length)?"skeleton"
+      :(imageEnabled&&(sc.image_prompt||sc.video_prompt))?"photo":"anim";
   if(sc.mode==="photo"){
     sc.image_prompt=sc.image_prompt||sc.video_prompt;
     if(!imageEnabled||!sc.image_prompt)sc.mode="anim";
@@ -3382,7 +3399,12 @@ function coerceMode(sc){
   if(sc.mode==="anim"&&!sc.els?.length)prepScene(sc);
 }
 async function fallbackFromFailedMedia(sc){
-  if(sc.mode==="hybrid"&&sc.videoUrl===null&&imageEnabled&&(sc.image_prompt||sc.video_prompt)){
+  if(sc.mode==="hybrid"&&sc.videoUrl===null&&sc.motion_steps&&sc.motion_steps.length){
+    sc.mode="skeleton";
+    chatMsg('sys','clip failed — the anatomy figure performs it instead');
+    await ensureClip(sc);
+  }
+  else if(sc.mode==="hybrid"&&sc.videoUrl===null&&imageEnabled&&(sc.image_prompt||sc.video_prompt)){
     sc.mode="photo"; sc.image_prompt=sc.image_prompt||sc.video_prompt;
     chatMsg('sys','clip failed — falling back to a generated still');
     await ensureImage(sc);
@@ -3897,6 +3919,63 @@ async function mineVideo(url){
 $('mine').onclick=()=>mineVideo($('tube').value.trim());
 $('tube').addEventListener('keydown',e=>{
   if(e.key==='Enter')mineVideo($('tube').value.trim());});
+
+/* ============ livestream -> tutorial ============
+   A livestream is a how-to being written in real time. Following one polls
+   /api/live, which mines ONLY the transcript tail that arrived since the
+   last poll — the new instruction is appended to the playing lesson as
+   fresh chapters, and its procedures join the hivemind as they are said.
+   The lesson keeps playing; the stream keeps teaching it. */
+const LIVE={on:false,url:"",timer:null,got:0};
+async function livePoll(first){
+  if(!LIVE.on)return;
+  try{
+    const r=await fetch("/api/live",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({url:LIVE.url,reset:!!first})});
+    const d=await r.json();
+    if(!r.ok)
+      chatMsg('sys','live follow: '+(d.error?d.error.message:'failed')
+             +' — still trying');
+    else if(d.waiting){
+      if(first)chatMsg('sys','&#9679; following the stream — waiting for '
+        +'enough new material'+(d.note?' ('+d.note+')':''));
+    }else if(d.chapters&&d.chapters.length){
+      LIVE.got+=d.chapters.length;
+      if(lessonRunning){
+        scenes.push(...d.chapters.map(prepScene));
+        renderSceneList();renderTimeline();
+        chatMsg('sys','&#9679; live: '+d.chapters.length+' new chapter(s) '
+               +'from the stream queued into this lesson — its steps are in '
+               +'the hivemind, so Ask knows them already');
+      }else{
+        chatMsg('sys','&#9679; live: the stream\'s first '+d.chapters.length
+               +' chapter(s) are ready — playing');
+        playPreset(d.title||'live lesson',d.chapters);
+      }
+    }
+  }catch(e){}
+  if(LIVE.on)LIVE.timer=setTimeout(()=>livePoll(false),40000);
+}
+function liveStop(){
+  LIVE.on=false; clearTimeout(LIVE.timer);
+  $('liveBtn').textContent='Follow live';
+  $('liveBtn').setAttribute('aria-pressed','false');
+}
+$('liveBtn').onclick=()=>{
+  if(LIVE.on){liveStop();
+    chatMsg('sys','stopped following the stream — '+LIVE.got
+           +' chapter(s) came from it');return;}
+  const url=$('tube').value.trim();
+  if(!url){chatMsg('sys','paste the livestream URL first, then Follow live');
+    return;}
+  LIVE.on=true; LIVE.url=url; LIVE.got=0;
+  $('liveBtn').textContent='Stop live';
+  $('liveBtn').setAttribute('aria-pressed','true');
+  chatMsg('sys','&#9679; following the livestream — new instruction becomes '
+         +'new chapters as it arrives');
+  livePoll(true);
+};
 
 /* Off by default: tracking downloads the video and runs two neural trackers
    over it, which is tens of seconds a chapter rather than instant. */

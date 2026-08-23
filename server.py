@@ -1762,6 +1762,7 @@ BOOK_SYS = """You convert instructional books into interactive ANIMATED video le
   {"narration":"2-3 conversational spoken sentences teaching the point in the book's own terms","title":"short noun phrase","mode":"actions","seconds":14,"actions":[{"text":"One imperative action STARTING WITH THE VERB, from the book","footage":"2-5 words naming the filmable thing"} , 2-4 actions]}
   {"narration":"...","title":"...","mode":"hand","seconds":10,"hand_steps":["Imperative finger/hand action from the book", 2-4 of them]}
   {"narration":"...","title":"...","mode":"skeleton","seconds":12,"motion_steps":["Whole-body imperative from the book", 2-4],"muscles":["glutes","quads"]}
+  {"narration":"...","title":"...","mode":"hybrid","seconds":12,"video_prompt":"STYLE sentence + one sentence naming this exercise","motion_steps":["...", 2-4],"muscles":["..."]}
   {"narration":"...","title":"...","mode":"compose","seconds":12,"parts":[{"kind":"skeleton","title":"posture","steps":["..."],"muscles":["..."]},{"kind":"hand","title":"grip","steps":["..."]}]}
   {"narration":"...","title":"...","mode":"world","seconds":15,"actors":[{"kind":"skeleton","title":"the body","steps":["..."],"muscles":["..."]},{"kind":"hand","title":"grip","steps":["..."]}]}
   {"narration":"...","title":"...","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[{"type":"box","x":20,"y":30,"w":12,"h":8,"label":"...","color":"blue","in":"pop"}]}]}
@@ -1772,7 +1773,9 @@ Rules:
 - USE THE WHOLE PALETTE — a good lesson MIXES modes, never one mode throughout:
   "actions" for procedures best shown as real film, with concrete filmable footage terms.
   "hand" for finger technique (grips, fretting, picking, knots).
-  "skeleton" for posture, whole-body movement and EXERCISE: an animated figure performs the steps, and "muscles" (lowercase names: glutes, quads, hamstrings, calves, core, back, chest, shoulders, biceps, triceps, neck) lights those groups up red-orange on its body while they work — so for a fitness/yoga/dance/sports book make one skeleton chapter PER exercise, motion_steps its reps and cues, muscles the ones the book says it works.
+  "hybrid" is the flagship for EXERCISE — a diffusion-generated 3D animation, the anatomy-video look. For a fitness/yoga/dance/sports book make one hybrid chapter PER exercise. Its "video_prompt" MUST begin with this EXACT style sentence, identical in every chapter so the whole lesson looks like one production: "Smooth 3D-rendered fitness anatomy animation, matte white 3D figure with sculpted muscle definition, the working muscles glowing red-orange, modern gym with polished wooden floor and a large ocean-view window, soft studio lighting, slow orbiting camera, seamless loop, no text." — followed by ONE sentence naming THIS exercise, its equipment and the movement (e.g. "The figure performs barbell hip thrusts, shoulders on a flat bench, driving the hips upward."). ALWAYS give that same chapter "motion_steps" (its reps and form cues from the book) and "muscles" (lowercase names: glutes, quads, hamstrings, calves, core, back, chest, shoulders, biceps, triceps, neck) — when video generation is off or fails, the player performs the exercise itself as an anatomy figure with those muscle groups burning red-orange, so the chapter works either way.
+  "skeleton" for posture and whole-body movement that is not a gym exercise; it too may carry "muscles".
+  A NON-fitness book may use hybrid chapters the same way: FIRST read what kind of book this is, then invent ONE style sentence that fits ITS world — a cookbook gets overhead kitchen cinematography on a wooden counter with warm daylight; a woodworking manual gets a workbench close-up in warm shop light; a guitar primer gets a close-up of hands on the fretboard in soft window light; a gardening guide gets bright outdoor macro footage — and reuse that sentence VERBATIM as the opening of every video_prompt in the lesson, then one sentence for the chapter's specific action. One book, one visual production; the format of the video always follows the content's own context.
   "compose" when body and fingers matter at the same time — the panes play side by side.
   "world" for at least one chapter whenever a body, a tool and an object must be in the right places relative to each other — one 3D room at real scale.
   "anim" ONLY for genuinely abstract structure (a tuning diagram, a rep scheme chart) — at most 1.
@@ -2151,6 +2154,83 @@ def mine_video():
                                               for s in m["doc"]["steps"]]}
                               for m in mined],
                     "failed": failed, "stats": HM.stats()})
+
+
+# ------------------------------------------------- livestream -> tutorial
+#
+# A livestream is a how-to being written in real time. Following one polls
+# its transcript, mines ONLY the tail that arrived since the last poll, and
+# hands back fresh chapters — so the stream turns into instruction while it
+# is still streaming, and its procedures join the hivemind as they are said.
+# One cursor per video id, in memory: a restart just re-mines from the top.
+
+LIVE_CURSORS = {}
+MIN_LIVE_NEW_SECS = 45          # do not wake Claude for ten seconds of talk
+MIN_LIVE_NEW_CHARS = 250
+
+
+@app.post("/api/live")
+def live_follow():
+    """Poll a livestream (or any still-growing video) as a lesson.
+
+    {"url": "https://youtube.com/watch?v=...", "reset": true?}
+    -> {"waiting": true, "buffered": secs}   not enough new material yet
+    -> {"title", "chapters": [...], "cursor": secs, "steps": n}  the new tail
+    """
+    if not API_KEY:
+        return jsonify({"error": {"message":
+            "Server has no ANTHROPIC_API_KEY set — export it and restart"}}), 500
+    p = request.get_json(silent=True) or {}
+    url = str(p.get("url") or "")[:300]
+    if not url:
+        return jsonify({"error": {"message": "url required"}}), 400
+    try:
+        vid, title, rows = openclaw.fetch_transcript(url)
+    except openclaw.MineError as e:
+        # a stream whose captions have not started yet is "not yet", not "no"
+        return jsonify({"waiting": True, "buffered": 0,
+                        "note": f"no transcript yet ({e})"}), 200
+    key = vid or url
+    if p.get("reset"):
+        LIVE_CURSORS.pop(key, None)
+    cur = float(LIVE_CURSORS.get(key, 0.0))
+    # rows are (start_seconds, text) tuples — see openclaw.fetch_transcript
+    fresh = [(float(s), str(t)) for s, t in rows if float(s) >= cur]
+    end = max((s for s, _ in fresh), default=cur)
+    text = " ".join(t for _, t in fresh)
+    if end - cur < MIN_LIVE_NEW_SECS or len(text) < MIN_LIVE_NEW_CHARS:
+        return jsonify({"waiting": True, "cursor": cur,
+                        "buffered": round(max(0.0, end - cur))})
+    try:
+        doc = openclaw._extract(
+            API_KEY,
+            f"Video title: {title or '(live stream)'}\n"
+            "This is the LATEST SLICE of a livestream still in progress; "
+            "earlier parts were already taught as their own chapters. "
+            "Extract only what THIS slice teaches, in its own order.",
+            "Transcript slice:\n" + openclaw.transcript_text(fresh),
+            openclaw.EXTRACT_MODEL)
+        doc = openclaw._finish(doc, title, {
+            "video_id": vid, "video_title": title,
+            "url": f"https://www.youtube.com/watch?v={vid}" if vid else url,
+            "source": f"live:{vid or url}"})
+    except openclaw.MineError as e:
+        return jsonify({"waiting": True, "cursor": cur,
+                        "buffered": round(end - cur),
+                        "note": f"slice had no teachable steps ({e})"}), 200
+    except Exception as e:
+        return jsonify({"error": {"message": f"live mining failed: {e}"}}), 502
+    chapters = openclaw.doc_to_lesson(doc)
+    if doc.get("steps"):
+        try:
+            HM.ingest(openclaw.hivemind_doc(doc))
+            HM.save(GRAPH_PATH)
+        except Exception:
+            pass
+    LIVE_CURSORS[key] = end + 0.5      # the last mined row must not re-mine
+    return jsonify({"title": title or "live lesson", "chapters": chapters,
+                    "cursor": LIVE_CURSORS[key],
+                    "steps": len(doc.get("steps") or [])})
 
 
 @app.post("/api/claude")

@@ -227,8 +227,8 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
               title="Turn on your camera. The rig performs the movement, MediaPipe tracks you, and the two are compared joint by joint — in your browser, nothing is uploaded.">Coach me</button>
       <button class="big ghost" id="mirrorBtn" aria-pressed="true"
               title="You are facing the demonstration, so copying it with the opposite arm is the natural thing to do. Mirror accepts that; turn it off to be graded on the same side the rig uses.">Mirror: on</button>
-      <button class="big ghost" id="verifyBtn" aria-pressed="false"
-              title="Verify each step through your camera as the lesson plays: after every whole-body chapter (a book exercise, a livestream step), the lesson pauses, you perform it, MediaPipe tracks your joints against that chapter's own steps, and the lesson moves on when you hit the pose. Click again for COACH-VERIFY: the lesson proceeds only when the action actually lands — missed rounds get a spoken correction grounded in the book, and the pass band adapts to you as you practice. Nothing uploaded.">Verify: off</button>
+      <button class="big ghost" id="verifyBtn" aria-pressed="true"
+              title="ON BY DEFAULT: after every demonstrated chapter, the livestream coaching begins — the step's film keeps playing beside your camera, MediaPipe tracks your joints against that chapter's own steps, the coach commentates live, and the lesson proceeds only when the action actually lands. Missed rounds get a spoken correction grounded in the source, the pass band adapts to you, and a messy check is polished: re-explained in animation from your measured faults, then re-verified. Click to turn it off, twice more to re-arm. Nothing uploaded.">Coach-verify</button>
       <button class="big ghost" id="quizBtn" aria-pressed="false"
               title="Quiz what was just taught: after each chapter the tutor asks one check question grounded in the book/video/stream's own knowledge. Answer by clicking a choice; a miss is explained out loud AND as a new animated chapter, and a knowledge point missed twice sends the tutor off to study a video about it — the same self-experimentation loop the movements get.">Quiz: off</button>
     </div>
@@ -2676,8 +2676,13 @@ async function handleQuestion(){
   if(SIM._res){const r=SIM._res; SIM._res=null; $('q').value="";
     chatMsg('you',q); r(q); return;}
   /* mid-coaching there are no chapters, but there is very much something to
-     ask about — the pose the student is holding right now */
-  if(!scenes.length&&!COACH.on){$('status').textContent="Start a lesson first";$('status').className='status err';return;}
+     ask about — the pose the student is holding right now. And with NO
+     lesson at all, "show me X" or "help me with X" IS the lesson: the
+     answer chapter plays as its own mini-lesson, and with coach-verify
+     armed it hands straight to the livestream camera check when it has
+     performable steps. */
+  if(!scenes.length&&!COACH.on&&!topicNow)
+    topicNow=q.slice(0,80);
   answering=true; $('ask').disabled=true; $('q').value="";
   pauseLesson();
   chatMsg('you',q);
@@ -2699,7 +2704,10 @@ async function handleQuestion(){
       ?`Not playing a chapter: a live coaching session is running, and the `
        +`student is trying to hold step ${COACH.step+1} of `
        +`${COACH.ref.steps.length}: "${COACH.ref.steps[COACH.step].text}"`
-      :`Current chapter: "${sc.title||sc.sketch_prompt}" — narration: "${sc.narration}"`;
+      :scenes.length
+      ?`Current chapter: "${sc.title||sc.sketch_prompt}" — narration: "${sc.narration}"`
+      :`No lesson is playing yet — this question STARTS one. Answer it as `
+       +`a complete standalone chapter that teaches the whole thing.`;
     const userMsg=
 `Topic: ${topicNow}
 ${where}
@@ -3873,6 +3881,11 @@ async function startLesson(){
   }
   $('status').className='status';$('go').disabled=true;
   $('chat').innerHTML="";qaHistory=[];currentScene=-1;
+  if(VERIFY.on&&VERIFY.strict)
+    chatMsg('sys','&#9673; livestream coaching is armed: after each '
+      +'demonstrated chapter, the camera comes on — the step\'s film keeps '
+      +'playing beside you, the coach commentates live, and the lesson '
+      +'proceeds when the action lands. Click "Coach-verify" to watch only.');
   if(voiceOn)withVoices(()=>voiceNote(true));   /* before a word is spoken */
   try{
     $('status').textContent="Director is storyboarding the animation";$('status').className='status busy';
@@ -5177,7 +5190,10 @@ function lnnInputs(deltas,score,seen,hold,hand){
   return u;
 }
 
-const VERIFY={on:false,strict:false,active:false,busy:false,
+/* ON BY DEFAULT: the livestream coaching after every video instruction is
+   the product, not an option — every lesson with performable steps hands
+   over to the webcam. One click on Coach-verify turns it off. */
+const VERIFY={on:true,strict:true,active:false,busy:false,
   cam:null,video:null,pose:null,hander:null,
   ref:null,steps:[],refIdx:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
   live:null,lm:null,handLm:null,handPrev:null,handPrevAt:0,handScore:0,

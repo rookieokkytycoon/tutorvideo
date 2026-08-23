@@ -227,10 +227,12 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
               title="Turn on your camera. The rig performs the movement, MediaPipe tracks you, and the two are compared joint by joint — in your browser, nothing is uploaded.">Coach me</button>
       <button class="big ghost" id="mirrorBtn" aria-pressed="true"
               title="You are facing the demonstration, so copying it with the opposite arm is the natural thing to do. Mirror accepts that; turn it off to be graded on the same side the rig uses.">Mirror: on</button>
+      <button class="big ghost" id="verifyBtn" aria-pressed="false"
+              title="Verify each step through your camera as the lesson plays: after every whole-body chapter (a book exercise, a livestream step), the lesson pauses, you perform it, MediaPipe tracks your joints against that chapter's own steps, and the lesson moves on when you hit the pose — your turn, every chapter, nothing uploaded.">Verify: off</button>
     </div>
     <label>Teach from a book — upload a PDF and it becomes the lesson</label>
     <div class="row">
-      <input id="bookfile" type="file" accept=".pdf,application/pdf" style="display:none">
+      <input id="bookfile" type="file" accept=".pdf,application/pdf" multiple style="display:none">
       <button class="big ghost" id="bookBtn"
               title="The book replaces the director: its exercises become animated chapters in its own teaching order — hand rigs, action reels, 3D rooms, and for exercise books a body figure with the working muscles lit up red — and its procedures go into the hivemind so interrupting mid-lesson gets answered from what the book actually says.">Upload a book</button>
     </div>
@@ -1952,6 +1954,12 @@ function render(now){
     try{coachRender(now);}catch(e){COACH.err=""+(e.message||e);}
     drawCaption(); drawAvatar(now); return;
   }
+  /* Mid-lesson camera verification owns the board the same way coaching
+     does: the student is the picture until the step is hit. */
+  if(VERIFY.active){
+    try{verifyRender(now);}catch(e){}
+    drawCaption(); drawAvatar(now); return;
+  }
   /* In a room the generated clip is a surface inside the scene, not a
      backdrop behind it, so the full-frame draw is skipped and drawScreen
      paints the same <video> element onto the quad instead. */
@@ -3547,6 +3555,11 @@ async function runLesson(startAt=0){
          the visual timer is a floor, the narration is the truth */
       if(narrating)await narrating;
       if(lessonAbort)break;
+      /* verified tutorial: the demonstration is only half the loop — now
+         the CAMERA watches the student perform this chapter's own steps,
+         gesture-tracked joint by joint, before the lesson moves on */
+      if(VERIFY.on)await verifyChapter(sc);
+      if(lessonAbort)break;
       await waitWhilePaused();
       if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;}
     }
@@ -3560,6 +3573,7 @@ async function runLesson(startAt=0){
   }
   lessonRunning=false; player.active=false;
   setBadge(LIVE.on?'live':'');   /* a followed stream keeps the session live */
+  if(!LIVE.on)verifyRelease();   /* holding live keeps the camera warm */
   if(lessonAbort){lessonAbort=false;return;}      /* something else is starting */
   if(pendingSeek!=null){const s=pendingSeek;pendingSeek=null;runLesson(s);return;}
   if(LIVE.on)chatMsg('sys','&#9679; holding live — the lesson resumes when '
@@ -3627,64 +3641,82 @@ $('go').onclick=startLesson;
    cited as the source. */
 $('bookBtn').onclick=()=>$('bookfile').click();
 $('bookfile').onchange=async e=>{
-  const file=e.target.files&&e.target.files[0];
-  e.target.value="";                       /* same file can be picked again */
-  if(!file)return;
+  const files=Array.from(e.target.files||[]).slice(0,6);
+  e.target.value="";                       /* same files can be picked again */
+  if(!files.length)return;
   if(answering){$('status').textContent="Finishing an answer first — try again in a second";
     $('status').className='status busy';return;}
   if(COACH.on)await coachStop();
-  /* a book handed over MID-LESSON (or while following a stream) joins the
-     conversation instead of replacing it: its chapters queue into the same
-     playing lesson, one continuous agentic video from every source */
-  const merging=(lessonRunning||LIVE.on)&&scenes.length>0;
-  if(lessonRunning&&!merging){
-    chatMsg('sys','&#9632; stopped the lesson that was playing');
-    await stopLesson();}
+  /* Books handed over MID-LESSON (or while following a stream) join the
+     conversation instead of replacing it — and SEVERAL books queue like a
+     broadcast schedule: each is analyzed in turn while the previous one is
+     already playing, announced by a divider chapter, its chapters appended
+     to the same continuous live lesson. A channel of instruction, not a
+     pile of separate lessons. */
   $('bookBtn').disabled=true;
-  $('status').textContent=`Reading "${file.name}" — extracting the book and `
-                         +`structuring it into chapters`;
-  $('status').className='status busy';
+  if(files.length>1)
+    chatMsg('sys','&#128218; '+files.length+' books queued — each becomes a '
+           +'segment of one continuous lesson');
   try{
-    const fd=new FormData(); fd.append("file",file);
-    const r=await fetch("/api/book",{method:"POST",body:fd});
-    const d=await r.json();
-    if(d.disabled)throw new Error("book upload needs an API key on the server ("+(d.why||"")+")");
-    if(!r.ok||!d.chapters)throw new Error(d.error?d.error.message:"the book could not be read");
-    if(merging){
-      const at=scenes.length;
-      scenes.push(...d.chapters.map(prepScene));
-      renderSceneList(); renderTimeline();
-      chatMsg('sys',`&#128214; "${d.title}" — ${d.pages} pages read, `
-        +`${d.chapters.length} chapters queued into the running lesson`
-        +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
-          +`interrupt any time and the answer comes from the book`:''));
-      if(d.detailed&&d.detailed.steps)
-        chatMsg('sys','&#9096; self-experiment: two independent readers '
-          +'extracted '+d.detailed.steps+' detailed steps — '
+    for(let bi=0;bi<files.length;bi++){
+      const file=files[bi];
+      const merging=(lessonRunning||LIVE.on||bi>0)&&scenes.length>0;
+      if(lessonRunning&&!merging){
+        chatMsg('sys','&#9632; stopped the lesson that was playing');
+        await stopLesson();}
+      $('status').textContent=`Reading "${file.name}" (${bi+1}/${files.length})`
+                             +` — extracting the book and structuring it`;
+      $('status').className='status busy';
+      const fd=new FormData(); fd.append("file",file);
+      const r=await fetch("/api/book",{method:"POST",body:fd});
+      const d=await r.json();
+      if(d.disabled)throw new Error("book upload needs an API key on the server ("+(d.why||"")+")");
+      if(!r.ok||!d.chapters){
+        chatMsg('sys','&#9888; "'+file.name+'" could not be read'
+               +(d.error?' — '+d.error.message:''));
+        continue;                  /* one bad book must not stop the rest */
+      }
+      const expl=d.detailed&&d.detailed.steps
+        ?('&#9096; self-experiment: two independent readers extracted '
+          +d.detailed.steps+' detailed steps — '
           +Math.round((d.detailed.agreement||0)*100)+'% corroborated'
           +(d.detailed.contested?', '+d.detailed.contested
-            +' contested step(s) queued for review in the hivemind':''));
+            +' contested step(s) queued for review in the hivemind':''))
+        :'';
+      if(merging){
+        const at=scenes.length;
+        scenes.push(prepScene({mode:'anim',seconds:6,
+          title:'next: '+String(d.title).slice(0,44),
+          narration:'Next up — '+d.title+'.',
+          steps:[{beat:'the next book begins',els:[
+            {type:'text',x:25,y:30,text:'up next',color:'ink',in:'fade'},
+            {type:'box',x:25,y:20,w:34,h:9,label:String(d.title).slice(0,44),
+             color:'blue',in:'pop'}]}]}),
+          ...d.chapters.map(prepScene));
+        renderSceneList(); renderTimeline();
+        chatMsg('sys',`&#128214; "${d.title}" — ${d.pages} pages read, `
+          +`${d.chapters.length} chapters queued into the running lesson`
+          +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
+            +`interrupt any time and the answer comes from the book`:''));
+        if(expl)chatMsg('sys',expl);
+        $('status').textContent="";$('status').className='status';
+        if(!lessonRunning)runLesson(at);   /* holding live: play the book now */
+        continue;
+      }
+      topicNow=d.topic||d.title; $('topic').value=topicNow;
+      $('chat').innerHTML=""; qaHistory=[]; currentScene=-1;
+      scenes=d.chapters.map(prepScene);
+      renderSceneList(); renderTimeline();
+      chatMsg('sys',`&#128214; "${d.title}" — ${d.pages} pages read, `
+        +`${scenes.length} chapters`
+        +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
+          +`interrupt any time and the answer comes from the book`:''));
+      if(expl)chatMsg('sys',expl);
       $('status').textContent="";$('status').className='status';
-      if(!lessonRunning)runLesson(at);   /* holding live: play the book now */
-      return;
+      if(voiceOn)withVoices(()=>voiceNote(true));
+      runLesson(0);              /* not awaited: the NEXT book analyzes while
+                                    this one is already playing */
     }
-    topicNow=d.topic||d.title; $('topic').value=topicNow;
-    $('chat').innerHTML=""; qaHistory=[]; currentScene=-1;
-    scenes=d.chapters.map(prepScene);
-    renderSceneList(); renderTimeline();
-    chatMsg('sys',`&#128214; "${d.title}" — ${d.pages} pages read, `
-      +`${scenes.length} chapters`
-      +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
-        +`interrupt any time and the answer comes from the book`:''));
-    if(d.detailed&&d.detailed.steps)
-      chatMsg('sys','&#9096; self-experiment: two independent readers '
-        +'extracted '+d.detailed.steps+' detailed steps — '
-        +Math.round((d.detailed.agreement||0)*100)+'% corroborated'
-        +(d.detailed.contested?', '+d.detailed.contested
-          +' contested step(s) queued for review in the hivemind':''));
-    $('status').textContent="";$('status').className='status';
-    if(voiceOn)withVoices(()=>voiceNote(true));
-    await runLesson(0);
   }catch(err){
     $('status').textContent=err.message;$('status').className='status err';
   }finally{$('bookBtn').disabled=false;}
@@ -4661,6 +4693,197 @@ function coachContext(){
 }
 
 $('coach').onclick=()=>{COACH.on?coachStop():coachStart();};
+
+/* ============ verify through the camera, mid-lesson ============
+   Coaching is a session of its own; VERIFY is the same closed loop woven
+   INTO the lesson. With it on, every whole-body chapter — a book exercise,
+   a livestream step, a mined procedure — is followed by "your turn": the
+   camera comes on, MediaPipe tracks the student's joints, and the SAME
+   angle-band scoring the coach uses grades them against that chapter's own
+   steps. Hit the pose and the lesson moves on; the tracking never leaves
+   the tab. The camera and trackers start once and stay warm for the whole
+   verified lesson. */
+const VERIFY={on:false,active:false,busy:false,
+  cam:null,video:null,pose:null,hander:null,
+  ref:null,steps:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
+  live:null,lm:null,score:0,cues:[],per:[],done:null};
+const VERIFY_BONES=[["shoulder_l","shoulder_r"],["hip_l","hip_r"],
+  ["shoulder_l","hip_l"],["shoulder_r","hip_r"],
+  ["shoulder_l","elbow_l"],["elbow_l","wrist_l"],
+  ["shoulder_r","elbow_r"],["elbow_r","wrist_r"],
+  ["hip_l","knee_l"],["knee_l","ankle_l"],
+  ["hip_r","knee_r"],["knee_r","ankle_r"]];
+const VERIFY_STEP_MS=20000, VERIFY_HOLD_MS=850;
+function verifySteps(sc){
+  const out=[];
+  if(Array.isArray(sc.motion_steps))out.push(...sc.motion_steps);
+  (sc.parts||sc.actors||[]).forEach(p=>{
+    if((p.kind==='skeleton'||p.kind==='body')&&Array.isArray(p.steps))
+      out.push(...p.steps);});
+  return out.map(s=>String(s)).filter(Boolean).slice(0,6);
+}
+async function verifyCamera(){
+  if(VERIFY.video)return;
+  $('status').textContent="Verify: asking for your camera";
+  $('status').className='status busy';
+  VERIFY.cam=await navigator.mediaDevices.getUserMedia(
+    {video:{width:{ideal:640},height:{ideal:480},facingMode:"user"},audio:false});
+  const v=document.createElement('video');
+  v.autoplay=true;v.muted=true;v.playsInline=true;v.srcObject=VERIFY.cam;
+  await v.play(); VERIFY.video=v;
+  const pair=await loadLandmarker();
+  VERIFY.pose=pair[0]; VERIFY.hander=pair[1];
+  $('status').textContent="";$('status').className='status';
+}
+function verifyRelease(){
+  if(VERIFY.cam)VERIFY.cam.getTracks().forEach(t=>t.stop());
+  if(VERIFY.pose){try{VERIFY.pose.close();}catch(_){}}
+  if(VERIFY.hander){try{VERIFY.hander.close();}catch(_){}}
+  VERIFY.cam=VERIFY.video=VERIFY.pose=VERIFY.hander=null;
+  VERIFY.active=false;
+}
+async function verifyChapter(sc){
+  const steps=verifySteps(sc);
+  if(!steps.length||VERIFY.busy)return;
+  VERIFY.busy=true;
+  try{
+    /* the reference is THIS chapter's own steps — the student is graded
+       against what was just demonstrated, not a generic exercise */
+    const r=await fetch("/api/coach",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({steps:steps,title:sceneName(sc),
+                           seconds:Math.min(16,4+steps.length*4)})});
+    const d=await r.json();
+    if(!r.ok||!d.reference)
+      throw new Error((d.error&&d.error.message)||"no reference");
+    await verifyCamera();
+    /* borrow the coach's scoring seat so the SAME definitions grade this —
+       coaching and a lesson never run at the same time, so it is free */
+    COACH.spec=d.reference; COACH.ref=d.reference;
+    VERIFY.ref=d.reference; VERIFY.steps=steps; VERIFY.si=0;
+    VERIFY.hold=0; VERIFY.lastVT=-1; VERIFY.live=null; VERIFY.lm=null;
+    VERIFY.score=0; VERIFY.cues=[];
+    VERIFY.per=steps.map(()=>({best:0,ok:false}));
+    VERIFY.lastT=VERIFY.stepT0=performance.now();
+    captionText="Your turn — "+steps[0]; captionQA=false;
+    if(voiceOn)speak("Your turn. "+steps[0]
+                    +". Stand back so the camera sees all of you.");
+    setBadge('coach');
+    const out=await new Promise(res=>{VERIFY.done=res; VERIFY.active=true;});
+    VERIFY.active=false; VERIFY.done=null;
+    setBadge('live'); captionText="";
+    const hit=out.per.filter(p=>p.ok).length;
+    const best=out.per.reduce((m,p)=>Math.max(m,p.best),0);
+    chatMsg(hit===out.per.length?'tutor':'sys',
+      (hit===out.per.length
+        ?'&#10003; verified through the camera — '
+        :'&#9678; camera check: ')
+      +hit+'/'+out.per.length+' step(s) hit, best score '+best
+      +(hit===out.per.length?'':' — moving on; ask and it will re-explain'));
+  }catch(e){
+    chatMsg('sys','&#9888; camera verify skipped — '+(e&&e.message||e));
+    VERIFY.active=false; VERIFY.done=null;
+  }finally{VERIFY.busy=false;}
+}
+function verifyNext(hit){
+  const per=VERIFY.per;
+  per[VERIFY.si].ok=per[VERIFY.si].ok||hit;
+  VERIFY.si++; VERIFY.hold=0; VERIFY.stepT0=performance.now();
+  if(VERIFY.si>=VERIFY.steps.length){
+    if(VERIFY.done)VERIFY.done({per:per});
+    return;
+  }
+  captionText="Your turn — "+VERIFY.steps[VERIFY.si];
+  if(voiceOn)speak((hit?"Good. ":"Moving on. ")+VERIFY.steps[VERIFY.si]);
+}
+function verifyTick(now){
+  const v=VERIFY.video; if(!v)return;
+  if(v.currentTime!==VERIFY.lastVT&&VERIFY.pose){
+    VERIFY.lastVT=v.currentTime;
+    try{
+      const out=VERIFY.pose.detectForVideo(v,now);
+      const wl=out.worldLandmarks&&out.worldLandmarks[0];
+      const il=out.landmarks&&out.landmarks[0];
+      if(wl&&il){VERIFY.live=coachAngles(coachFrame(wl),coachVis(il));
+                 VERIFY.lm=il;}
+      else{VERIFY.live=null;VERIFY.lm=null;}
+    }catch(_){}
+  }
+  if(VERIFY.live&&VERIFY.si<VERIFY.steps.length){
+    const s=scorePose(VERIFY.live,
+      VERIFY.ref.steps[Math.min(VERIFY.si,VERIFY.ref.steps.length-1)]);
+    VERIFY.score=s.score; VERIFY.cues=s.cues||[];
+    VERIFY.per[VERIFY.si].best=Math.max(VERIFY.per[VERIFY.si].best,s.score);
+    if(s.ok){VERIFY.hold+=now-VERIFY.lastT;
+      if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
+    }else VERIFY.hold=0;
+  }
+  if(VERIFY.si<VERIFY.steps.length&&now-VERIFY.stepT0>VERIFY_STEP_MS)
+    verifyNext(false);
+  VERIFY.lastT=now;
+}
+function verifyRender(now){
+  if(lessonAbort||!VERIFY.on){
+    if(VERIFY.done)VERIFY.done({per:VERIFY.per});
+    return;
+  }
+  verifyTick(now);
+  if(!VERIFY.active)return;      /* the tick may just have finished the run */
+  const w=cv.width,h=cv.height;
+  ctx.fillStyle='#101216';ctx.fillRect(0,0,w,h);
+  const v=VERIFY.video;
+  let x=0,y=0,vw=0,vh=0;
+  if(v&&v.videoWidth){
+    const ar=v.videoWidth/v.videoHeight;
+    vh=h*0.74; vw=vh*ar; if(vw>w*0.8){vw=w*0.8;vh=vw/ar;}
+    x=(w-vw)/2; y=(h-vh)/2-h*0.02;
+    ctx.save();ctx.translate(x+vw,y);ctx.scale(-1,1);   /* mirror, like a mirror */
+    ctx.drawImage(v,0,0,vw,vh);ctx.restore();
+    /* the gesture tracking made visible: your joints, live, in 3D-tracked
+       positions projected back onto the picture */
+    if(VERIFY.lm&&COACH.spec&&COACH.spec.blazepose){
+      const bp=COACH.spec.blazepose;
+      const px=nm=>{const p=VERIFY.lm[bp[nm]];
+        return p?[x+(1-p.x)*vw,y+p.y*vh]:null;};
+      ctx.strokeStyle='rgba(31,158,122,.95)';ctx.lineWidth=3;ctx.lineCap='round';
+      VERIFY_BONES.forEach(([a,b])=>{
+        const p=px(a),q=px(b); if(!p||!q)return;
+        ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();});
+      ctx.fillStyle='#1F9E7A';
+      Object.keys(bp).forEach(nm=>{const p=px(nm); if(!p)return;
+        ctx.beginPath();ctx.arc(p[0],p[1],4,0,7);ctx.fill();});
+    }
+    ctx.strokeStyle='rgba(253,253,248,.5)';ctx.lineWidth=2;
+    ctx.strokeRect(x,y,vw,vh);
+  }
+  const pass=(VERIFY.ref&&VERIFY.ref.pass)||78, ok=VERIFY.score>=pass;
+  ctx.font='bold 44px "IBM Plex Mono",monospace';ctx.textAlign='left';
+  ctx.textBaseline='alphabetic';
+  ctx.fillStyle=ok?'#1F9E7A':'#E0A32E';
+  ctx.fillText(String(VERIFY.score),18,54);
+  ctx.font='13px "IBM Plex Mono",monospace';ctx.fillStyle='#FDFDF8';
+  ctx.fillText('step '+Math.min(VERIFY.si+1,VERIFY.steps.length)+'/'
+    +VERIFY.steps.length
+    +(VERIFY.lm?'':'   -   step back, no body in view'),18,76);
+  (VERIFY.cues||[]).slice(0,2).forEach((c,i)=>{
+    ctx.fillStyle='#E0A32E';
+    ctx.fillText(c.text+' ('+c.off+'°)',18,98+i*18);});
+  VERIFY.per.forEach((p,i)=>{
+    ctx.fillStyle=p.ok?'#1F9E7A'
+      :(i===VERIFY.si?'#E0A32E':'rgba(253,253,248,.35)');
+    ctx.beginPath();ctx.arc(30+i*26,h-24,8,0,7);ctx.fill();});
+}
+$('verifyBtn').onclick=()=>{
+  VERIFY.on=!VERIFY.on;
+  $('verifyBtn').textContent='Verify: '+(VERIFY.on?'on':'off');
+  $('verifyBtn').setAttribute('aria-pressed',String(VERIFY.on));
+  chatMsg('sys',VERIFY.on
+    ?'&#9673; verify on — after each whole-body chapter the camera watches '
+      +'YOU perform its steps, tracked joint by joint against that '
+      +'chapter\'s own reference. Nothing leaves this tab.'
+    :'verify off');
+  if(!VERIFY.on&&!VERIFY.busy)verifyRelease();
+};
 $('mirrorBtn').onclick=e=>{
   COACH.mirror=!COACH.mirror;
   e.target.textContent="Mirror: "+(COACH.mirror?"on":"off");

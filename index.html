@@ -447,6 +447,7 @@ RECOGNIZE THE FORMAT of the question and pick the chapter mode to match it:
 - finger technique -> "hand"; a whole-body movement or posture -> "skeleton" (with "muscles" when it is an exercise);
 - body AND fingers together -> "compose"; where things are relative to each other -> "world";
 - an abstract mechanism, comparison or structure -> "anim" with 2-4 beats that BUILD the picture.
+Every movement answer is staged SPATIALLY: a skeleton/hand/compose chapter is lifted into the 3D room automatically — the figure performs at real scale on the room's floor with real footage of each step on the room's screen, and for an exercise the anatomy body burns its working "muscles" red-orange right there in the room. So always name "muscles" for exercises, whatever mode you pick.
 Make the new_scene DETAILED — its own narration (2-3 sentences), a real title, 2-4 steps/actions — and it may carry "footage": 2-5 words naming real stock film to play behind it.
 When coach-verify is armed, the steps of your new_scene are REQUIRED PRACTICE, not illustration: after the chapter plays, the student must perform those exact steps on their camera, tracked joint by joint, before the lesson proceeds — and the check of the chapter they interrupted still runs right after yours. So write every step as ONE short physically performable imperative ("Bend both knees to ninety degrees"), never a fact or an abstraction.
 THE PREFERRED new_scene whenever the student asks how to physically DO something — "show me", "how do I", "what grip", "walk me through it" — is {"mode":"actions","actions":[{"text":"Grip the cap and twist counter-clockwise","footage":"hand twisting bottle cap"}, ...]}: 2-4 short imperative actions, each with 2-5 words of "footage" naming the filmable thing. That chapter plays REAL FILM of each action cut to its narration, with the tracked hand or body rig performing the same movement over the film and your marker strokes on top — the fully physical explanation, and the strongest one this board has.
@@ -487,7 +488,7 @@ RECOGNIZE THE FORMAT of the question and pick the mode:
 - finger technique -> {"mode":"hand","hand_steps":["...", ...]}
 - a whole-body movement or exercise -> {"mode":"skeleton","motion_steps":["...", ...]} plus "muscles":["quads",...] when it is an exercise
 - body AND fingers together -> {"mode":"compose","parts":[{"kind":"skeleton","title":"posture","steps":[...]},{"kind":"hand","title":"grip","steps":[...]}]}
-- a COMPLETE how-to involving the body AND the hands AND real objects or tools, or where things are relative to each other -> {"mode":"world","step_videos":true,"actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} — the INTERACTIVE instruction video: real footage of every step plays on the room's screen, cut to the actor performing it, the camera travels between them, and the student can drag to orbit the room
+- a COMPLETE how-to involving the body AND the hands AND real objects or tools, or where things are relative to each other -> {"mode":"world","step_videos":true,"actors":[{"kind":"skeleton","steps":[...],"muscles":["glutes","quads"]},{"kind":"hand","steps":[...]}]} — the INTERACTIVE instruction video: real footage of every step plays on the room's screen, cut to the actor performing it, the camera travels between them, the student can drag to orbit the room, and a skeleton actor with "muscles" is drawn as the anatomy body with those groups burning red-orange while they work (name them for every exercise)
 - an abstract mechanism, fact or comparison -> {"mode":"anim","steps":[{"beat":"one spoken beat","els":[...]},...]}
 ALWAYS include "narration" (2-3 spoken sentences that TEACH it), "title" (short noun phrase) and "seconds" (8-18).
 The steps are the FULL STEPS of the how-to: every action, one short physically performable imperative each, nothing skipped and nothing implied. The question may be UNRELATED to any current lesson — teach it from scratch anyway; there is no such thing as off-topic.`;
@@ -2945,7 +2946,26 @@ function prepScene(sc){
      and play as an empty board, so anything not on this list becomes an
      animation — which is the one mode that always works. */
   if(typeof sc.mode!=="string"||SCENE_MODES.indexOf(sc.mode)<0)sc.mode="anim";
-  /* an ANSWER that arrives as a 3D room is the full instruction video:
+  /* EVERYTHING is explained SPATIALLY: an answer that arrives as a flat
+     pane — skeleton, hand, compose — is LIFTED into the 3D room, the same
+     figure(s) performing at real scale on the room's floor (an exercise's
+     working muscles burning red-orange on the anatomy body), the camera
+     travelling, the room orbitable. Only a prose-rescue chapter (steps
+     still unparsed) and the role-play's own scenes stay as they are. */
+  if(sc.qa&&!sc.sim
+     &&(sc.mode==="skeleton"||sc.mode==="hand"||sc.mode==="compose")){
+    const lift=sc.mode==="compose"?composeParts(sc)
+      :sc.mode==="skeleton"
+        ?[{kind:"skeleton",steps:sc.motion_steps||[],
+           muscles:Array.isArray(sc.muscles)?sc.muscles:undefined}]
+        :[{kind:"hand",steps:sc.hand_steps||sc.motion_steps||[]}];
+    const perf=lift.filter(a=>a&&((a.steps||[]).length||(a.shapes||[]).length));
+    if(perf.some(a=>(a.steps||[]).length)){
+      sc.mode="world"; sc.actors=perf; delete sc.parts;
+      sc.title=sc.title||"";
+    }
+  }
+  /* an ANSWER that lives in the 3D room is the full instruction video:
      unless the model said otherwise, the room's screen carries real
      footage of every step, cut to the actor performing it — the
      explanation, the interaction and the film integrated in one space */
@@ -3242,8 +3262,16 @@ function ensureClip(sc,quiet){
         const mgot =m==="compose"?d.parts  :m==="world"?d.actors  :null;
         if(mspec&&mgot)mgot.forEach((c,i)=>{
           const s=mspec[i];
-          if(s&&c.kind==="skeleton"&&Array.isArray(s.muscles)&&s.muscles.length)
-            c.muscles=s.muscles;});
+          if(s&&c.kind==="skeleton"&&Array.isArray(s.muscles)&&s.muscles.length){
+            const mus=s.muscles.slice(0,8).map(String);
+            c.muscles=mus;
+            /* a WORLD actor nests its solved clip — and the renderer burns
+               what it finds on the CLIP (drawActor hands a.clip to
+               drawSkeleton). Copied only onto the actor, the figure in the
+               room stayed a wire skeleton no matter what the exercise
+               named — the anatomy body never appeared in the 3D room. */
+            if(c.clip)c.clip.muscles=mus;
+          }});
         const note=m==="world"
           ?'&#9634; room ready — '+d.actors.map(a=>(PANE_LABEL[a.kind]||a.kind)
              +(a.bind?' (bound to '+a.bind.actor+')':'')).join(' + ')
@@ -5245,6 +5273,17 @@ const VERIFY_BONES=[["shoulder_l","shoulder_r"],["hip_l","hip_r"],
   ["hip_l","knee_l"],["knee_l","ankle_l"],
   ["hip_r","knee_r"],["knee_r","ankle_r"]];
 const VERIFY_STEP_MS=20000, VERIFY_HOLD_MS=850;
+function paneClip(c,kind){
+  /* the demo clip of one kind, wherever the chapter keeps it: the clip
+     itself, a compose PART (frames on the pane), or a WORLD actor (frames
+     nested one level down on actor.clip) — the room's demonstrations are
+     as verifiable as the flat ones */
+  if(!c)return null;
+  if(c.kind===kind&&c.frames)return c;
+  const p=(c.parts||c.actors||[])
+    .find(x=>x&&x.kind===kind&&(x.frames||(x.clip&&x.clip.frames)));
+  return p?(p.frames?p:p.clip):null;
+}
 function verifySteps(sc){
   /* EVERY performable step in the chapter, typed by how the camera checks
      it: whole-body steps by joint-angle bands, hand steps by tracked hand
@@ -5273,7 +5312,7 @@ function verifySteps(sc){
       const kind=c.kind==='hand'?'hand'
                 :(c.kind==='skeleton'||!c.kind)?'body':null;
       if(!kind)return;
-      (c.gestures||[]).forEach(g=>{
+      (c.gestures||(c.clip&&c.clip.gestures)||[]).forEach(g=>{
         const t=String((g&&(g.text||g.name))||'').trim();
         if(t&&!out.some(o=>o.text===t))out.push({text:t,kind:kind});});});
   }
@@ -5310,9 +5349,7 @@ async function verifyChapter(sc){
     /* PRECISE: the reference is reduced from the EXACT solved clip this
        chapter just performed — the very frames the student watched — and
        only synthesised from step text when there is no clip to reuse */
-    const demo=sc.clip&&(sc.clip.kind==='skeleton'?sc.clip
-      :((sc.clip.parts||sc.clip.actors||[])
-        .find(p=>p&&p.kind==='skeleton'&&p.frames)||null));
+    const demo=paneClip(sc.clip,'skeleton');
     let d=null;
     if(bodySteps.length){
       const r=await fetch("/api/coach",{method:"POST",
@@ -5338,9 +5375,7 @@ async function verifyChapter(sc){
     /* the demonstration keeps playing THROUGH practice: the reference clip
        loops beside the camera, so what to copy is always on screen */
     VERIFY.clip=d&&d.clip&&d.clip.frames?d.clip:null;
-    VERIFY.handClip=sc.clip?(sc.clip.kind==='hand'?sc.clip
-      :((sc.clip.parts||sc.clip.actors||[])
-        .find(p=>p&&p.kind==='hand'&&p.frames)||null)):null;
+    VERIFY.handClip=paneClip(sc.clip,'hand');
     VERIFY.loopT0=performance.now();
     /* each body step maps to its slot in the reference, in order; a hand
        step has no angle bands — the hand tracker checks it instead */

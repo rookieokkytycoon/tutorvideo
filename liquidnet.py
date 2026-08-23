@@ -44,8 +44,9 @@ from __future__ import annotations
 
 import math
 
-N_HIDDEN = 12
-N_INPUT = 11          # 9 joint-band deviations + score/100 + body-seen flag
+N_HIDDEN = 24
+N_INPUT = 13          # 9 joint-band deviations + score/100 + seen flag
+#                       + hold fraction + hand-step flag
 SEED = 0xC0FFEE
 READOUT_GAIN = 4.0    # LTC states live near +-0.3; the readout needs reach
 
@@ -89,19 +90,27 @@ class LTC:
         self.x = [0.0] * n
         self.wo = [(r() * 2 - 1) * 0.1 for _ in range(n + m)]
         self.bo = 0.0
+        # the second readout: ENGAGEMENT — is a student actually here and
+        # working? Taught by the tracker's own seen flag, it lets the loop
+        # pause its coaching clock when nobody is in front of the camera
+        # instead of burning rounds against an empty room.
+        self.we = [(r() * 2 - 1) * 0.1 for _ in range(n + m)]
+        self.be = 0.0
         self.y = 0.0
+        self.y_eng = 0.0
 
     def reset(self):
         self.x = [0.0] * self.n
         self.y = 0.0
+        self.y_eng = 0.0
 
     def _features(self, u):
         """The readout's view: [gain*x ; u] — state plus skip connection."""
         return ([READOUT_GAIN * v for v in self.x]
                 + [u[k] if k < len(u) else 0.0 for k in range(self.m)])
 
-    def step(self, u, dt, teach=None):
-        """One fused-solver step; optionally one online readout update."""
+    def step(self, u, dt, teach=None, teach_eng=None):
+        """One fused-solver step; optionally online readout updates."""
         dt = min(max(dt, 0.005), 0.1)
         f = []
         for i in range(self.n):
@@ -115,6 +124,7 @@ class LTC:
                          / (1 + dt * (1 / self.tau[i] + f[i])))
         z = self._features(u)
         self.y = _sig(self.bo + sum(w * v for w, v in zip(self.wo, z)))
+        self.y_eng = _sig(self.be + sum(w * v for w, v in zip(self.we, z)))
         if teach is not None:
             # online readout adaptation — cross-entropy gradient, which
             # does not vanish when the readout is confidently wrong (the
@@ -122,6 +132,10 @@ class LTC:
             g = self.eta * (teach - self.y)
             self.wo = [w + g * v for w, v in zip(self.wo, z)]
             self.bo += g
+        if teach_eng is not None:
+            g = self.eta * (teach_eng - self.y_eng)
+            self.we = [w + g * v for w, v in zip(self.we, z)]
+            self.be += g
         return self.y
 
     def tau_effective(self, u):
@@ -140,7 +154,7 @@ class LTC:
 def _self_test():
     net = LTC()
     quiet = [0.0] * N_INPUT
-    busy = [1.0] * 9 + [0.9, 1.0]
+    busy = [1.0] * 9 + [0.9, 1.0, 0.5, 0.0]
 
     # 1. the liquid property: busy input must tighten the time constants
     t_quiet = sum(net.tau_effective(quiet)) / net.n
@@ -152,23 +166,34 @@ def _self_test():
         net.step(busy, 1 / 30)
     assert all(math.isfinite(v) and abs(v) < 10 for v in net.x), net.x
 
-    # 3. online learning: the readout separates two input regimes.
+    # 3. online learning: both readouts separate their regimes.
     # Phases last ~3 s, as real pose phases do — shorter than the slowest
     # time constants and the states never reach the attractors they are
     # judged by, which is not how the loop is used.
     net = LTC()
-    good = [0.05] * 9 + [0.9, 1.0]      # small deviations, high score
-    bad = [0.8] * 9 + [0.3, 1.0]        # large deviations, low score
+    good = [0.05] * 9 + [0.9, 1.0, 0.5, 0.0]   # small deviations, high score
+    bad = [0.8] * 9 + [0.3, 1.0, 0.0, 0.0]     # large deviations, low score
+    gone = [0.0] * 9 + [0.0, 0.0, 0.0, 0.0]    # nobody in front of the camera
     for _ in range(400):
         for _ in range(90):
-            net.step(good, 1 / 30, teach=1.0)
+            net.step(good, 1 / 30, teach=1.0, teach_eng=1.0)
         for _ in range(90):
-            net.step(bad, 1 / 30, teach=0.0)
+            net.step(bad, 1 / 30, teach=0.0, teach_eng=1.0)
+        for _ in range(30):
+            net.step(gone, 1 / 30, teach_eng=0.0)
     for _ in range(90):
         y_good = net.step(good, 1 / 30)
+    e_good = net.y_eng
     for _ in range(90):
         y_bad = net.step(bad, 1 / 30)
+    e_bad = net.y_eng
+    for _ in range(60):
+        net.step(gone, 1 / 30)
+    e_gone = net.y_eng
     assert y_good > 0.9 and y_bad < 0.1, (y_good, y_bad)
+    assert e_good > 0.8 and e_bad > 0.8 and e_gone < 0.3, \
+        (e_good, e_bad, e_gone)      # engaged whether right or wrong;
+    #                                  disengaged only when absent
 
     # 4. flicker robustness: confidence coasts through a two-frame tracker
     # dropout instead of collapsing — the whole reason the loop wants a
@@ -177,12 +202,13 @@ def _self_test():
         net.step(good, 1 / 30)
     held = net.y
     for _ in range(2):
-        net.step([0.0] * 9 + [0.0, 0.0], 1 / 30)   # tracker lost the body
+        net.step(gone, 1 / 30)                     # tracker lost the body
     assert net.y > 0.6 and abs(net.y - held) < 0.3, (net.y, held)
 
     print("liquidnet self-test OK: "
           f"tau busy {t_busy:.2f}s < quiet {t_quiet:.2f}s, "
-          f"learned split good={y_good:.2f} bad={y_bad:.2f}, "
+          f"split good={y_good:.2f}/bad={y_bad:.2f}, "
+          f"engagement {e_good:.2f}/{e_bad:.2f}/gone {e_gone:.2f}, "
           f"state bounded, flicker bridged at y={net.y:.2f}")
 
 

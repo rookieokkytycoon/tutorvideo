@@ -408,7 +408,7 @@ A chapter of abstract structure instead uses the shape mode, which is the OLD de
 ${ANIM_LANG}
 Four other modes exist for when a diagram is the wrong tool:
 - "hand": a close-up 3D hand — 21 tracked landmarks, five finger chains — demonstrating the actual hand movements of a repair, with the gesture named and the finger curl read out live. Set "hand_steps" to 2-5 SHORT imperative actions that START WITH THE VERB ("Pinch the tab and peel it back", "Grip the cap and twist counter-clockwise", "Press the tab until it clicks"), and omit "steps". THIS IS THE BEST MODE FOR SHOWING SOMEONE HOW TO FIX SOMETHING — hands are what actually do a repair, and the student can ask about the grip and get an answer about the grip.
-- "skeleton": the whole body performing the task, with gesture tracking and motion vectors. Set "motion_steps" the same way. Use it when the WHOLE BODY matters (posture, reach, a two-handed lift); use "hand" when the fingers matter, which for most repairs they do.
+- "skeleton": the whole body performing the task, with gesture tracking and motion vectors. Set "motion_steps" the same way. Use it when the WHOLE BODY matters (posture, reach, a two-handed lift); use "hand" when the fingers matter, which for most repairs they do. When the task is an EXERCISE or athletic movement, also set "muscles":["glutes","quads",...] (lowercase common names: glutes, quads, hamstrings, calves, core, back, chest, shoulders, biceps, triceps, neck) — the figure is then drawn as an anatomy body, individual muscle bellies with fiber striations, and the named groups burn red-orange while they work, brighter the faster they move. For a fitness topic this is THE mode: one exercise per chapter, its reps and form cues as motion_steps, its working muscles named.
 - "lineform": an actuated curve interface — a chain of servo motors that bends itself into shapes. Set "shapes" to 2-4 of: curve, helix, surface, solid, phone, wristband, lamp, ruler, slider, data. Use it to show how one physical line can display a curve, a surface, a solid or an icon.
 - "compose": TWO OR THREE of the above side by side on one timeline — the board splits into panes that all play together. Set "parts" to 2-3 of {"kind":"hand","steps":[...]}, {"kind":"skeleton","steps":[...]}, {"kind":"lineform","shapes":[...]}, each with an optional short "title". This is the RIGHT MODE whenever a step has both a whole-body component and a fingers component — "brace the wheel with your body while your fingers seat the chain" — because the student can watch the posture and the grip at the same time instead of choosing. Example: {"mode":"compose","seconds":12,"parts":[{"kind":"skeleton","steps":["Brace the wheel against your knee"],"title":"posture"},{"kind":"hand","steps":["Pinch the chain onto the teeth"],"title":"grip"}]}
 - "world": ONE 3D room instead of panes — the strongest mode when WHERE things are is part of the lesson. Set "actors" to 1-3 of {"kind":"skeleton","steps":[...]}, {"kind":"hand","steps":[...]}, {"kind":"lineform","shapes":[...]}, each optionally with "title". They stand in one space at real scale, so they occlude each other; a hand and a body are automatically the SAME person's hand. Add "wrap":true to a lineform actor and the servo chain bandages itself around the moving forearm — that is the paper's constraint, and it cannot be shown in a pane. Add "video_prompt" and the diffusion footage plays on a screen hanging in the room instead of behind everything. Better still, set "step_videos":true and EVERY step gets its own generated clip, cut onto that screen exactly when the rig performs it — real footage of the pinch playing behind the servo chain doing the pinch. Only do that when seeing the real thing matters, because it is one paid generation per step (max 4); you may instead write the prompts yourself as "step_videos":["one dense cinematic sentence for step 1", "...step 2"]. The camera moves on its own shot list, cutting close for finger work and wide for whole-body work, and the student can drag it. Example: {"mode":"world","seconds":15,"actors":[{"kind":"skeleton","title":"posture","steps":["Brace the wheel against your knee"]},{"kind":"hand","title":"grip","steps":["Pinch the chain onto the teeth"]},{"kind":"lineform","title":"target shape","shapes":["curve","wristband"],"wrap":true}]}
@@ -437,7 +437,7 @@ Then OPTIONALLY exactly one of:
 <new_scene>{"narration":"1-2 spoken sentences","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[ ... ]}]}</new_scene>
 Use <new_scene> when the question deserves its OWN animation (a different mechanism, a "show me X" request); it becomes the next chapter.
 THE PREFERRED new_scene whenever the student asks how to physically DO something — "show me", "how do I", "what grip", "walk me through it" — is {"mode":"actions","actions":[{"text":"Grip the cap and twist counter-clockwise","footage":"hand twisting bottle cap"}, ...]}: 2-4 short imperative actions, each with 2-5 words of "footage" naming the filmable thing. That chapter plays REAL FILM of each action cut to its narration, with the tracked hand or body rig performing the same movement over the film and your marker strokes on top — the fully physical explanation, and the strongest one this board has.
-A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements, with no film behind it. Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action. All of these are fast, so prefer them over a diagram any time the answer is a movement rather than a fact.
+A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements, with no film behind it. Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action — and when that action is an exercise, add "muscles":["glutes","quads",...] (lowercase common names) and the figure is drawn as an anatomy body with those groups burning red-orange while they work, exactly like the lesson's own exercise chapters. All of these are fast, so prefer them over a diagram any time the answer is a movement rather than a fact.
 When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in one 3D room at real scale instead of side by side, which is the better answer when the question is about where things are relative to each other.
 If the board is already a 3D room, you may ALSO answer by moving the camera:
 <camera>{"target":"grip index tip","dist":0.8,"seconds":1.4,"label":"close on the grip"}</camera>
@@ -1011,31 +1011,36 @@ function drawHud(lines,accent){
 }
 /* --- fitness figure ----------------------------------------------------
    A book exercise names the muscles it works, so instead of a wire skeleton
-   the body is drawn as flesh — tapered limbs, a filled torso — with the
-   working groups burning red-orange, brighter the faster they move: the
-   anatomy-video look. Everything still runs on the same servo chains; only
-   the paint changes, so tracking, vectors and gestures keep working. */
-const FLESH='#E3E0D8', BURN='#C4402A';
+   the body is drawn as an ANATOMY FIGURE — individual muscle bellies
+   (quads, hamstrings, calves, glutes, delts, biceps, triceps, forearms,
+   abs, traps) built on the same servo chains, ivory flesh with the working
+   groups in a red-orange gradient, fiber striations and a glow, brighter
+   the faster those joints actually move. The stock-footage backdrop
+   supplies the gym; this supplies the body. Tracking, vectors and gestures
+   keep working — only the paint changed. */
+const BURN='#C4402A';
 const MUSCLE_RX=[
-  [/glute|butt|hip/i,       ['leg_l','leg_r','glutes']],
-  [/quad|thigh|hamstring|leg|calf|calv|squat|lunge/i,['leg_l','leg_r']],
-  [/core|ab|oblique/i,      ['spine','torso']],
-  [/back|lat|trap|spine|lumbar|posture/i,['spine']],
-  [/chest|pec/i,            ['torso']],
-  [/shoulder|delt/i,        ['arm_l','arm_r']],
-  [/bicep|tricep|arm|forearm|grip|wrist/i,['arm_l','arm_r']],
-  [/neck/i,                 ['neck']]];
+  [/glute|butt|bridge|thrust|hip/i,             ['glutes','hams']],
+  [/quad|squat|lunge|leg press|knee|step.?up/i, ['quads','glutes']],
+  [/hamstring|rdl|deadlift|leg curl|hinge/i,    ['hams','glutes','back']],
+  [/calf|calv|raise/i,                          ['calves']],
+  [/core|ab|crunch|plank|oblique|situp|sit-up/i,['abs']],
+  [/back|lat|row|pull|trap|spine|lumbar|posture/i,['back']],
+  [/chest|pec|push|bench|press/i,               ['chest','delts','triceps']],
+  [/shoulder|delt|overhead|raise/i,             ['delts']],
+  [/bicep|curl/i,                               ['biceps','forearms']],
+  [/tricep|extension|dip/i,                     ['triceps']],
+  [/forearm|grip|wrist/i,                       ['forearms']],
+  [/\bleg\b/i,                                  ['quads','hams','calves','glutes']],
+  [/\barm\b/i,                                  ['biceps','triceps','delts','forearms']],
+  [/neck/i,                                     ['neck']]];
 function muscleRegions(names){
   const on=new Set();
   names.forEach(n=>MUSCLE_RX.forEach(([rx,regs])=>{
     if(rx.test(String(n)))regs.forEach(r=>on.add(r));}));
   /* a muscle name the map does not know still deserves a working body */
-  if(!on.size)['leg_l','leg_r','arm_l','arm_r','spine'].forEach(r=>on.add(r));
+  if(!on.size)['quads','hams','glutes','abs','back','delts'].forEach(r=>on.add(r));
   return on;
-}
-function burnTint(heat){
-  const t=0.55+0.45*Math.max(0,Math.min(1,heat)), a=[227,224,216],b=[196,64,42];
-  return `rgb(${a.map((v,i)=>Math.round(v+(b[i]-v)*t)).join(',')})`;
 }
 const CHAIN_JOINTS={arm_l:['shoulder_l','elbow_l','wrist_l'],
                     arm_r:['shoulder_r','elbow_r','wrist_r'],
@@ -1043,38 +1048,172 @@ const CHAIN_JOINTS={arm_l:['shoulder_l','elbow_l','wrist_l'],
                     leg_r:['hip_r','knee_r','ankle_r'],
                     spine:['hip_l','hip_r','shoulder_l','shoulder_r'],
                     neck:['nose']};
-const CHAIN_W={spine:[15,11],neck:[6.5,5],arm_l:[8.5,4.5],arm_r:[8.5,4.5],
-               leg_l:[12,5.5],leg_r:[12,5.5]};
 function chainHeat(k,vel,JI){
   const js=CHAIN_JOINTS[k]||[]; if(!js.length)return 0;
   const s=js.reduce((a,nm)=>a+V.len(vel[JI[nm]]||[0,0,0]),0)/js.length;
   return Math.min(1,s/0.7);
 }
-function muscleChain(pts,cam,w0,w1,color,glow){
-  for(let i=0;i<pts.length-1;i++){
-    const w=w0+(w1-w0)*(i/(pts.length-1));
-    const a=pxOf(pts[i],cam),q=pxOf(pts[i+1],cam);
-    const passes=glow?[['rgba(196,64,42,.25)',w+8]]:[];
-    passes.push(['rgba(20,20,18,.5)',w+2.4],[color,w]);
-    passes.forEach(([c,lw])=>{
-      ctx.strokeStyle=c;ctx.lineWidth=D(lw);ctx.lineCap='round';
-      ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();});
+/* screen-space machinery: a muscle belly is the chain's polyline swollen
+   sideways by a width profile, closed into one shape */
+function _mfNormals(sp){
+  const ns=[];
+  for(let i=0;i<sp.length;i++){
+    const a=sp[Math.max(0,i-1)], b=sp[Math.min(sp.length-1,i+1)];
+    const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy)||1;
+    ns.push([-dy/L,dx/L]);
   }
+  return ns;
 }
-function drawTorso(pos,JI,cam,burn,vel){
+function _mfBellyPoly(sp,ns,wOf,shift){
+  const A=[],B=[];
+  for(let i=0;i<sp.length;i++){
+    const t=i/(sp.length-1), w=Math.max(0.5,wOf(t)), s=shift||0;
+    A.push([sp[i][0]+ns[i][0]*(w+s), sp[i][1]+ns[i][1]*(w+s)]);
+    B.push([sp[i][0]-ns[i][0]*(w-s), sp[i][1]-ns[i][1]*(w-s)]);
+  }
+  return {poly:A.concat(B.reverse()), across:[A[A.length>>1],B[0]]};
+}
+function _mfPaint(shape,sp,ns,wOf,active,heat){
+  const [ga,gb]=shape.across;
+  const g=ctx.createLinearGradient(ga[0],ga[1],gb[0],gb[1]);
+  if(active){g.addColorStop(0,'#E87550');g.addColorStop(.45,'#D4502B');
+             g.addColorStop(1,'#8E2317');}
+  else{g.addColorStop(0,'#F4F2ED');g.addColorStop(.45,'#E6E3DA');
+       g.addColorStop(1,'#C3BFB3');}
+  if(active&&heat>0.2){ctx.save();
+    ctx.shadowColor='rgba(224,83,47,.55)';ctx.shadowBlur=D(9+9*heat);}
+  ctx.fillStyle=g;ctx.beginPath();
+  shape.poly.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.closePath();ctx.fill();
+  if(active&&heat>0.2)ctx.restore();
+  ctx.strokeStyle='rgba(55,50,45,.55)';ctx.lineWidth=D(1.3);
+  ctx.lineJoin='round';ctx.stroke();
+  /* fiber striations along the belly — what makes it read as muscle */
+  ctx.strokeStyle=active?'rgba(122,26,12,.4)':'rgba(120,115,105,.3)';
+  ctx.lineWidth=D(1);
+  [-0.5,0,0.5].forEach(f=>{
+    ctx.beginPath();
+    for(let i=0;i<sp.length;i++){
+      const t=i/(sp.length-1), w=wOf(t)*f*0.62;
+      const x=sp[i][0]+ns[i][0]*w, y=sp[i][1]+ns[i][1]*w;
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    }
+    ctx.stroke();});
+}
+function _mfLobe(c,rx,ry,rot,active,heat){
+  if(active&&heat>0.2){ctx.save();
+    ctx.shadowColor='rgba(224,83,47,.55)';ctx.shadowBlur=D(9+9*heat);}
+  const g=ctx.createRadialGradient(c[0]-rx*0.3,c[1]-ry*0.3,ry*0.15,c[0],c[1],
+                                   Math.max(rx,ry));
+  if(active){g.addColorStop(0,'#E87550');g.addColorStop(1,'#8E2317');}
+  else{g.addColorStop(0,'#F4F2ED');g.addColorStop(1,'#C3BFB3');}
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.ellipse(c[0],c[1],rx,ry,rot||0,0,7);ctx.fill();
+  if(active&&heat>0.2)ctx.restore();
+  ctx.strokeStyle='rgba(55,50,45,.5)';ctx.lineWidth=D(1.2);ctx.stroke();
+}
+function _mfDepth(p,cam){
+  return project(WX.on?WX.xf(p):p,WX.on?WX.cam:cam)[2];
+}
+function drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn){
   const P=nm=>pos[JI[nm]];
-  const quad=['shoulder_l','shoulder_r','hip_r','hip_l'].map(nm=>pxOf(P(nm),cam));
-  ctx.fillStyle=burn.has('torso')?burnTint(chainHeat('spine',vel,JI)):FLESH;
-  ctx.strokeStyle='rgba(20,20,18,.5)';ctx.lineWidth=D(2.4);ctx.lineJoin='round';
-  ctx.beginPath();quad.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
-  ctx.closePath();ctx.fill();ctx.stroke();
-}
-function drawGlutes(pos,JI,cam,scl){
-  const m=V.mul(V.add(pos[JI.hip_l],pos[JI.hip_r]),0.5), q=pxOf(m,cam);
-  ctx.fillStyle=burnTint(0.85);ctx.strokeStyle='rgba(20,20,18,.5)';
-  ctx.lineWidth=D(2);
-  ctx.beginPath();ctx.ellipse(q[0],q[1],scl*1.5,scl*1.0,0,0,7);
-  ctx.fill();ctx.stroke();
+  /* FK every chain so the flesh follows the servo lag, not straight bones */
+  const CH={};
+  for(const k in clip.chains){
+    const ch=clip.chains[k]; if(!ch.angles||!ch.angles[fi])continue;
+    const base=paths[k]?paths[k][0]:[0,0,0];
+    CH[k]=fkChain(ch.angles[fi],ch.device,base,paths[k]&&chainHeading(paths[k]));
+  }
+  for(const k in paths)if(!CH[k])CH[k]=paths[k];
+  const S=pts=>pts.map(p=>pxOf(p,cam));
+  const act=r=>burn.has(r);
+  const belly=(wpts,w0,w1,bulge,peakExp,region,chainK,shiftM)=>{
+    if(!wpts||wpts.length<2)return;
+    const sp=S(wpts), ns=_mfNormals(sp);
+    const scl=pxPerM(wpts[wpts.length>>1],cam);
+    const wOf=t=>(w0+(w1-w0)*t)*scl
+                 +bulge*scl*Math.sin(Math.PI*Math.pow(t,peakExp));
+    const sh=_mfBellyPoly(sp,ns,wOf,(shiftM||0)*scl);
+    _mfPaint(sh,sp,ns,wOf,act(region),chainHeat(chainK,vel,JI));
+  };
+  const upper=k=>{const p=CH[k];return p.slice(0,(p.length>>1)+1);};
+  const lower=k=>{const p=CH[k];return p.slice(p.length>>1);};
+  const drawLeg=side=>{
+    const k='leg_'+side;
+    belly(upper(k),0.075,0.052,0.028,0.7,'hams', k,-0.028);  /* hamstrings */
+    belly(upper(k),0.082,0.055,0.030,0.55,'quads',k, 0.022); /* quadriceps */
+    belly(lower(k),0.050,0.020,0.030,0.4,'calves',k, 0.006); /* gastroc+soleus */
+  };
+  const drawArm=side=>{
+    const k='arm_'+side;
+    belly(upper(k),0.048,0.036,0.017,0.75,'triceps', k,-0.02);
+    belly(upper(k),0.050,0.038,0.020,0.5, 'biceps',  k, 0.016);
+    belly(lower(k),0.042,0.016,0.016,0.35,'forearms',k, 0);
+    /* deltoid cap seats the arm into the shoulder */
+    const sh=S([CH[k][0]])[0], scl=pxPerM(CH[k][0],cam);
+    _mfLobe(sh,scl*0.062,scl*0.058,0,act('delts'),chainHeat(k,vel,JI));
+  };
+  const torso=()=>{
+    const sL=pxOf(P('shoulder_l'),cam), sR=pxOf(P('shoulder_r'),cam);
+    const hL=pxOf(P('hip_l'),cam),      hR=pxOf(P('hip_r'),cam);
+    const scl=pxPerM(P('shoulder_l'),cam);
+    const out=(a,b,m)=>[a[0]+(a[0]-b[0])*m, a[1]+(a[1]-b[1])*m];
+    const mixin=(a,b,t,c,m)=>{const p=[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];
+      return [p[0]+(c[0]-p[0])*m, p[1]+(c[1]-p[1])*m];};
+    const cx=[(sL[0]+sR[0]+hL[0]+hR[0])/4,(sL[1]+sR[1]+hL[1]+hR[1])/4];
+    const poly=[out(sL,sR,0.22), out(sR,sL,0.22),        /* deltoid-wide top */
+                mixin(sR,hR,0.55,cx,0.24),               /* waist pinch */
+                out(hR,hL,0.16), out(hL,hR,0.16),        /* hip flare */
+                mixin(sL,hL,0.55,cx,0.24)];
+    const on=act('back')||act('chest'), h=chainHeat('spine',vel,JI);
+    const g=ctx.createLinearGradient(poly[0][0],poly[0][1],poly[1][0],poly[1][1]);
+    if(on){g.addColorStop(0,'#E87550');g.addColorStop(.5,'#D4502B');
+           g.addColorStop(1,'#8E2317');}
+    else{g.addColorStop(0,'#F4F2ED');g.addColorStop(.5,'#E6E3DA');
+         g.addColorStop(1,'#C3BFB3');}
+    if(on&&h>0.2){ctx.save();
+      ctx.shadowColor='rgba(224,83,47,.5)';ctx.shadowBlur=D(9+9*h);}
+    ctx.fillStyle=g;ctx.beginPath();
+    poly.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+    ctx.closePath();ctx.fill();
+    if(on&&h>0.2)ctx.restore();
+    ctx.strokeStyle='rgba(55,50,45,.55)';ctx.lineWidth=D(1.4);
+    ctx.lineJoin='round';ctx.stroke();
+    /* trapezius: neck base down to each shoulder */
+    const nb=pxOf(V.lerp(V.mul(V.add(P('shoulder_l'),P('shoulder_r')),0.5),
+                         P('nose'),0.35),cam);
+    ctx.fillStyle=(act('back')||act('neck'))?'rgba(212,80,43,.85)'
+                                            :'rgba(230,227,218,.95)';
+    ctx.beginPath();ctx.moveTo(nb[0],nb[1]);ctx.lineTo(sL[0],sL[1]);
+    ctx.lineTo(sR[0],sR[1]);ctx.closePath();ctx.fill();
+    ctx.strokeStyle='rgba(55,50,45,.45)';ctx.lineWidth=D(1.1);ctx.stroke();
+    /* rectus column with segment cuts — the six-pack silhouette */
+    if(CH.spine)belly(CH.spine,0.052,0.045,0.006,0.5,'abs','spine',0);
+    if(CH.spine&&CH.spine.length>2){
+      const spp=S(CH.spine);
+      ctx.strokeStyle=act('abs')?'rgba(122,26,12,.45)':'rgba(120,115,105,.32)';
+      ctx.lineWidth=D(1);
+      for(let i=1;i<spp.length-1;i++){
+        ctx.beginPath();
+        ctx.moveTo(spp[i][0]-scl*0.05,spp[i][1]);
+        ctx.lineTo(spp[i][0]+scl*0.05,spp[i][1]);ctx.stroke();}
+    }
+  };
+  const glutes=()=>{
+    const scl=pxPerM(P('hip_l'),cam);
+    const gh=Math.max(chainHeat('leg_l',vel,JI),chainHeat('leg_r',vel,JI));
+    const hL=pxOf(P('hip_l'),cam), hR=pxOf(P('hip_r'),cam);
+    const rot=Math.atan2(hR[1]-hL[1],hR[0]-hL[0]);
+    [hL,hR].forEach(c=>_mfLobe([c[0],c[1]+scl*0.035],scl*0.088,scl*0.075,rot,
+                               act('glutes'),gh));
+  };
+  const neck=()=>{if(CH.neck)belly(CH.neck,0.045,0.038,0,1,'neck','neck',0);};
+  /* painter's order: far limbs, torso, glutes over the thigh tops, near
+     limbs, neck. Depth decides which side is "far" this frame. */
+  const dep=s=>(_mfDepth(P('shoulder_'+s),cam)+_mfDepth(P('hip_'+s),cam))/2;
+  const far=dep('l')>dep('r')?'l':'r', near=far==='l'?'r':'l';
+  drawArm(far); drawLeg(far); drawLeg(near);
+  torso(); glutes(); drawArm(near); neck();
 }
 function drawSkeleton(clip,t){
   const cam=clip.camera, n=clip.frames.length;
@@ -1093,23 +1232,17 @@ function drawSkeleton(clip,t){
   const paths=ctrlPaths(pos,JI);
   const burn=Array.isArray(clip.muscles)&&clip.muscles.length
     ?muscleRegions(clip.muscles):null;
-  if(burn)drawTorso(pos,JI,cam,burn,vel);        /* limbs overlap the torso */
-  for(const k in clip.chains){
+  if(burn){
+    drawMuscleFigure(clip,fi,pos,vel,JI,cam,paths,burn);
+  }else for(const k in clip.chains){
     const ch=clip.chains[k]; if(!ch.angles||!ch.angles[fi])continue;
     const base=paths[k]?paths[k][0]:[0,0,0];
     const pts=fkChain(ch.angles[fi],ch.device,base,paths[k]&&chainHeading(paths[k]));
-    if(burn){
-      const on=burn.has(k), heat=chainHeat(k,vel,JI);
-      const w=CHAIN_W[k]||[8,5];
-      muscleChain(pts,cam,w[0],w[1],on?burnTint(heat):FLESH,on&&heat>0.25);
-    }else{
-      strokePath(pts,cam,'#141412',D(k.startsWith('arm')?4.2:3.4),true);
-      ctx.fillStyle='#2456D6';                     /* one dot per servo */
-      pts.forEach((p,i)=>{if(i===0||i===pts.length-1)return;
-        const q=pxOf(p,cam);ctx.beginPath();ctx.arc(q[0],q[1],D(1.8),0,7);ctx.fill();});
-    }
+    strokePath(pts,cam,'#141412',D(k.startsWith('arm')?4.2:3.4),true);
+    ctx.fillStyle='#2456D6';                       /* one dot per servo */
+    pts.forEach((p,i)=>{if(i===0||i===pts.length-1)return;
+      const q=pxOf(p,cam);ctx.beginPath();ctx.arc(q[0],q[1],D(1.8),0,7);ctx.fill();});
   }
-  if(burn&&burn.has('glutes'))drawGlutes(pos,JI,cam,sc);
   if(clip.constraint&&clip.constraint.points[fi])          /* LineFORM Fig. 9 */
     strokePath(clip.constraint.points[fi],cam,'#1F9E7A',D(3.2),true);
 

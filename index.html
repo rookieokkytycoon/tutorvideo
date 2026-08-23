@@ -5184,6 +5184,8 @@ const VERIFY={on:false,strict:false,active:false,busy:false,
   clip:null,handClip:null,loopT0:0,
   zbuf:[],predLow:0,earlyHinted:false,
   owed:[],           /* checks an interrupt deferred — a debt, never waived */
+  film:[],_filmEls:null,      /* the step's real film, playing THROUGH practice */
+  sayT:0,saidHalf:false,inRange:false,wasEng:true,streak:0,   /* live coach */
   score:0,cues:[],per:[],done:null,round:0,log:[]};
 /* The adaptive part, in the spirit of liquid networks: the pass threshold
    per action is a parameter that keeps adapting to THIS student while they
@@ -5201,6 +5203,7 @@ function verifyEscalate(now){
   /* strict coaching: a timed-out round does NOT move on — it eases the
      band, resets the clock and sends the tracked faults to the coach */
   VERIFY.round++; VERIFY.stepT0=now; VERIFY.hold=0;
+  VERIFY.saidHalf=false; VERIFY.inRange=false; VERIFY.streak=0;
   if(VERIFY.zbuf.length){lnnTeachOutcome(VERIFY.zbuf,0);   /* a miss, learned */
     lnnTeachNeed(VERIFY.zbuf,1);           /* a coached round = detail needed */
     VERIFY.zbuf=[];}
@@ -5231,6 +5234,41 @@ async function verifyStudy(step){
         +d.doc.steps.length+' of its steps are applied knowledge now; the '
         +'next correction answers from them');
   }catch(_){}
+}
+/* ============ the live coach's voice ============
+   Verification is a COACHING LIVESTREAM, not a silent exam: the tutor
+   commentates the practice the way a streamer would — reacting the moment
+   the pose lands, counting the hold down, calling the comeback, noticing
+   when the student stepped away. Rate-limited so it encourages instead of
+   nagging, and silent while a real coaching hint is being spoken. */
+function verifySay(t,urgent){
+  const now=performance.now();
+  if(_verifyHinting||!VERIFY.active)return;
+  if(now-(VERIFY.sayT||0)<(urgent?2500:5000))return;
+  VERIFY.sayT=now;
+  captionText=t;
+  if(voiceOn)speak(t);
+}
+function verifyFilmEl(){
+  /* the step's REAL FILM, still teaching all through the webcam session:
+     the chapter's clips (action live-cut or the room screen's reel) ride
+     into practice as the demo pane's backdrop — matched to the current
+     step by its text, by position otherwise */
+  const f=VERIFY.film||[]; if(!f.length)return null;
+  const st=VERIFY.steps[VERIFY.si]||{};
+  let i=f.findIndex(c=>c&&c.text&&st.text&&c.text===st.text);
+  if(i<0)i=Math.max(0,Math.min(VERIFY.si,f.length-1));
+  const cue=f[i]; if(!cue||!cue.url)return null;
+  let el=REEL.els.get(cue.url)||(VERIFY._filmEls&&VERIFY._filmEls.get(cue.url));
+  if(!el){
+    el=document.createElement('video');
+    el.crossOrigin='anonymous'; el.muted=true; el.loop=true;
+    el.playsInline=true; el.src=MEDIA(cue.url);
+    if(!VERIFY._filmEls)VERIFY._filmEls=new Map();
+    VERIFY._filmEls.set(cue.url,el);
+  }
+  if(el.paused)el.play().catch(()=>{});
+  return el.readyState>=2?el:null;
 }
 let _verifyHinting=false;
 async function verifyCoachHint(step){
@@ -5332,6 +5370,8 @@ async function verifyCamera(){
   $('status').textContent="";$('status').className='status';
 }
 function verifyRelease(){
+  if(VERIFY._filmEls){VERIFY._filmEls.forEach(v=>{v.pause();v.src="";});
+    VERIFY._filmEls.clear();}
   if(VERIFY.cam)VERIFY.cam.getTracks().forEach(t=>t.stop());
   if(VERIFY.pose){try{VERIFY.pose.close();}catch(_){}}
   if(VERIFY.hander){try{VERIFY.hander.close();}catch(_){}}
@@ -5376,6 +5416,12 @@ async function verifyChapter(sc){
        loops beside the camera, so what to copy is always on screen */
     VERIFY.clip=d&&d.clip&&d.clip.frames?d.clip:null;
     VERIFY.handClip=paneClip(sc.clip,'hand');
+    /* the chapter's real film rides into practice — the explanation keeps
+       playing AS VIDEO beside the webcam, one clip per step */
+    VERIFY.film=((sc.reelCues&&sc.reelCues.length?sc.reelCues:sc.reel)||[])
+      .filter(c=>c&&c.url);
+    VERIFY.sayT=0; VERIFY.saidHalf=false; VERIFY.inRange=false;
+    VERIFY.wasEng=true; VERIFY.streak=0;
     VERIFY.loopT0=performance.now();
     /* each body step maps to its slot in the reference, in order; a hand
        step has no angle bands — the hand tracker checks it instead */
@@ -5453,10 +5499,23 @@ function verifyNext(hit){
     if(VERIFY.done)VERIFY.done({per:per});
     return;
   }
+  /* the streak, called like a stream: consecutive clean first-round
+     passes get celebrated, a break resets quietly */
+  if(hit&&per[VERIFY.si-1]&&per[VERIFY.si-1].rounds===0)VERIFY.streak++;
+  else VERIFY.streak=0;
+  VERIFY.saidHalf=false; VERIFY.inRange=false;
   const st=VERIFY.steps[VERIFY.si];
   captionText="Your turn — "+st.text;
-  if(voiceOn)speak((hit?"Good. ":"Moving on. ")+st.text
+  if(voiceOn)speak(
+    (hit?(VERIFY.streak>=2
+        ?"That's "+VERIFY.streak+" in a row — you're flying! "
+        :"Clean! ")
+       :"Moving on. ")
+    +st.text
     +(st.kind==='hand'?" Bring your hand close to the camera.":""));
+  if(VERIFY.streak>=2)
+    chatMsg('sys','&#9679; '+VERIFY.streak+' clean first-round passes '
+                 +'in a row');
 }
 function verifyTick(now){
   const v=VERIFY.video; if(!v)return;
@@ -5539,9 +5598,19 @@ function verifyTick(now){
                +'coaching early');
         verifyCoachHint(st.text);
       }
+      /* the livestream commentary: react the moment it lands, count the
+         hold, cheer the near miss — the coach is WATCHING, audibly */
+      if(landing&&!VERIFY.inRange){VERIFY.inRange=true;
+        verifySay("There it is — hold it right there.",true);}
+      if(!landing)VERIFY.inRange=false;
+      if(landing&&!VERIFY.saidHalf&&VERIFY.hold>VERIFY_HOLD_MS/2){
+        VERIFY.saidHalf=true;
+        verifySay("Halfway — keep holding…",true);}
+      if(!landing&&seen&&sc100>=verifyNeed()-8)
+        verifySay("So close — a touch more and it lands.");
       if(landing){VERIFY.hold+=now-VERIFY.lastT;
         if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
-      }else if(conf<0.6)VERIFY.hold=0;
+      }else if(conf<0.6){VERIFY.hold=0;VERIFY.saidHalf=false;}
       /* conf >= 0.6: the liquid state bridges a flicker — one bad tracker
          frame no longer zeroes a nearly-held pose; the hold is kept, not
          grown, so the pass still requires real held frames */
@@ -5551,7 +5620,12 @@ function verifyTick(now){
     }
     /* the engagement readout pauses the coaching clock: rounds are for a
        student who is HERE and missing, not for an empty room */
-    if(LNN.yEng<0.35)VERIFY.stepT0+=now-VERIFY.lastT;
+    if(LNN.yEng<0.35){VERIFY.stepT0+=now-VERIFY.lastT;
+      if(VERIFY.wasEng){VERIFY.wasEng=false;
+        verifySay("I've paused the clock — step back into frame "
+                 +"when you're ready.",true);}}
+    else if(!VERIFY.wasEng){VERIFY.wasEng=true;
+      verifySay("Welcome back — picking up where you left off.",true);}
   }
   if(VERIFY.si<VERIFY.steps.length&&now-VERIFY.stepT0>VERIFY_STEP_MS){
     /* strict coaching gates progression: the lesson proceeds ONLY when the
@@ -5586,6 +5660,20 @@ function verifyRender(now){
   /* LEFT: the demonstration keeps playing — the animation the student is
      copying loops through THIS step's own segment, beside their camera */
   ctx.fillStyle='#F4F3EE';ctx.fillRect(p.L[0],p.L[1],p.L[2],p.L[3]);
+  /* the step's REAL FILM plays behind the demo rig, all through practice —
+     the explanation never stops being a video while the webcam watches */
+  const film=verifyFilmEl();
+  if(film){
+    ctx.save();
+    ctx.beginPath();ctx.rect(p.L[0],p.L[1],p.L[2],p.L[3]);ctx.clip();
+    const vw=film.videoWidth||16, vh=film.videoHeight||9;
+    const s=Math.max(p.L[2]/vw,p.L[3]/vh);
+    ctx.drawImage(film,p.L[0]+(p.L[2]-vw*s)/2,p.L[1]+(p.L[3]-vh*s)/2,
+                  vw*s,vh*s);
+    ctx.fillStyle='rgba(253,253,248,.30)';   /* lift, so the rig reads */
+    ctx.fillRect(p.L[0],p.L[1],p.L[2],p.L[3]);
+    ctx.restore();
+  }
   const vp=[p.L[0]/cv.width,p.L[1]/cv.height,p.L[2]/cv.width,p.L[3]/cv.height];
   if(st.kind!=='hand'&&VERIFY.clip){
     const ri=Math.max(0,Math.min(VERIFY.refIdx[VERIFY.si]||0,
@@ -5608,7 +5696,7 @@ function verifyRender(now){
   }
   ctx.strokeStyle='rgba(20,20,18,.14)';ctx.lineWidth=1;
   ctx.strokeRect(p.L[0]+.5,p.L[1]+.5,p.L[2]-1,p.L[3]-1);
-  coachPaneTag(p.L,'copy this','#2456D6');
+  coachPaneTag(p.L,film?'copy this — real film + rig':'copy this','#2456D6');
 
   /* every required step, states visible: done, NOW, still to come — the
      whole practice is on screen, nothing to remember */

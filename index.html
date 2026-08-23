@@ -229,6 +229,8 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
               title="You are facing the demonstration, so copying it with the opposite arm is the natural thing to do. Mirror accepts that; turn it off to be graded on the same side the rig uses.">Mirror: on</button>
       <button class="big ghost" id="verifyBtn" aria-pressed="false"
               title="Verify each step through your camera as the lesson plays: after every whole-body chapter (a book exercise, a livestream step), the lesson pauses, you perform it, MediaPipe tracks your joints against that chapter's own steps, and the lesson moves on when you hit the pose. Click again for COACH-VERIFY: the lesson proceeds only when the action actually lands — missed rounds get a spoken correction grounded in the book, and the pass band adapts to you as you practice. Nothing uploaded.">Verify: off</button>
+      <button class="big ghost" id="quizBtn" aria-pressed="false"
+              title="Quiz what was just taught: after each chapter the tutor asks one check question grounded in the book/video/stream's own knowledge. Answer by clicking a choice; a miss is explained out loud AND as a new animated chapter, and a knowledge point missed twice sends the tutor off to study a video about it — the same self-experimentation loop the movements get.">Quiz: off</button>
     </div>
     <label>Teach from a book — upload a PDF and it becomes the lesson</label>
     <div class="row">
@@ -3565,6 +3567,11 @@ async function runLesson(startAt=0){
          gesture-tracked joint by joint, before the lesson moves on */
       if(VERIFY.on)await verifyChapter(sc);
       if(lessonAbort)break;
+      /* and the knowledge loop: was the chapter LEARNED, not just watched?
+         One grounded check question; a miss becomes an animated
+         re-explanation and, missed twice, a study trip */
+      if(QUIZ.on)await quizChapter(sc);
+      if(lessonAbort)break;
       await waitWhilePaused();
       if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;}
     }
@@ -3590,6 +3597,16 @@ async function runLesson(startAt=0){
           +tough.map(l=>'"'+l.title+'" ('+l.rounds+' coached round'
             +(l.rounds>1?'s':'')+')').join(', '):' — all hit clean'));
       VERIFY.log.length=0;
+    }
+    if(QUIZ.asked){
+      chatMsg('sys','&#9673; knowledge check: '+QUIZ.right+'/'+QUIZ.asked
+        +' answered right'
+        +(QUIZ.missed.length?' — missed: '
+          +QUIZ.missed.map(m=>'"'+String(m.topic||'').slice(0,40)+'"')
+            .join(', ')
+          +' — ask about any of them, or click their chapters to replay'
+        :' — clean sweep'));
+      QUIZ.asked=QUIZ.right=0; QUIZ.missed.length=0;
     }
   }
   if(lessonAbort){lessonAbort=false;return;}      /* something else is starting */
@@ -5092,6 +5109,10 @@ function verifyNext(hit){
 }
 function verifyTick(now){
   const v=VERIFY.video; if(!v)return;
+  /* interruptible at every step: while the tutor is answering a question,
+     the practice clock FREEZES — no scoring, no hold decay, no rounds
+     burned. Ask mid-squat, get the answer, pick up where you were. */
+  if(answering){VERIFY.stepT0+=now-VERIFY.lastT;VERIFY.lastT=now;return;}
   const st=VERIFY.steps[VERIFY.si]||null;
   if(v.currentTime!==VERIFY.lastVT&&st){
     VERIFY.lastVT=v.currentTime;
@@ -5334,6 +5355,92 @@ function verifyRender(now){
   ctx.fillText('engaged '+LNN.yEng.toFixed(2)
     +(LNN.yEng<0.35?' — clock paused':''),bx+130,y0+78);
 }
+/* ============ the knowledge quiz ============
+   Camera verification checks the BODY learned the chapter; the quiz checks
+   the HEAD did. One grounded multiple-choice question after each chapter,
+   answered by click. Right: praise and on. Wrong: the correct answer is
+   spoken, the point is re-explained as a NEW ANIMATED CHAPTER through the
+   same agentic QA path a student's own question takes, and a knowledge
+   point missed twice sends the tutor to study a video about it — the same
+   open-world self-experimentation the movements get. */
+const QUIZ={on:false,busy:false,asked:0,right:0,missed:[],_res:null};
+$('chat').addEventListener('click',e=>{
+  const b=e.target.closest('[data-quiz]');
+  if(!b||!QUIZ._res)return;
+  const r=QUIZ._res; QUIZ._res=null;
+  b.parentElement.querySelectorAll('[data-quiz]')
+    .forEach(x=>{x.disabled=true;});
+  r(parseInt(b.getAttribute('data-quiz'),10));
+});
+function quizAsk(d){
+  captionText=d.question; captionQA=true;
+  if(voiceOn)speak(d.question);
+  const chip=(i,label)=>'<button data-quiz="'+i+'" style="margin:3px 4px 0 0;'
+    +'padding:5px 10px;border:1px solid #DCDCD2;border-radius:8px;'
+    +'background:#FDFDF8;font:inherit;font-size:12px;cursor:pointer">'
+    +label+'</button>';
+  chatMsg('tutor','<b>'+d.question+'</b><br>'
+    +d.choices.map((c,i)=>chip(i,String.fromCharCode(65+i)+'. '+c)).join('')
+    +chip(-1,'skip'));
+  return new Promise(res=>{
+    QUIZ._res=res;
+    const t=setInterval(()=>{                 /* a stopped lesson lets go */
+      if(lessonAbort||!QUIZ.on){clearInterval(t);
+        if(QUIZ._res){QUIZ._res=null;res(null);}}
+      if(!QUIZ._res)clearInterval(t);
+    },300);
+  });
+}
+async function quizChapter(sc){
+  if(QUIZ.busy||!sc.narration)return;
+  QUIZ.busy=true;
+  try{
+    const r=await fetch("/api/quiz",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({title:sceneName(sc),narration:sc.narration,
+                           topic:topicNow||''})});
+    const d=await r.json();
+    if(!r.ok||!d.question||!Array.isArray(d.choices))return;
+    if(lessonAbort)return;
+    QUIZ.asked++;
+    const ans=await quizAsk(d);
+    captionText=""; captionQA=false;
+    if(ans==null||ans<0){if(ans===-1)chatMsg('sys','question skipped');return;}
+    if(ans===d.answer){
+      QUIZ.right++;
+      chatMsg('tutor','&#10003; right'+(d.why?' — '+d.why:''));
+      if(voiceOn)speak('Right. '+(d.why||''));
+    }else{
+      QUIZ.missed.push(d);
+      chatMsg('tutor','not quite — the answer is "'+d.choices[d.answer]+'"'
+             +(d.why?'. '+d.why:''));
+      if(voiceOn)speak('Not quite. The answer is '+d.choices[d.answer]
+                      +'. '+(d.why||''));
+      /* the miss is re-explained IN ANIMATION: route it through the same
+         agentic QA path the student's own questions take, which answers
+         grounded in the hivemind and builds a new animated chapter */
+      if(!answering&&!lessonAbort){
+        $('q').value='Explain again, with an animation: '+d.question;
+        handleQuestion();
+      }
+      /* a knowledge point missed twice is a hole — go study a video on it */
+      if(QUIZ.missed.filter(m=>m.topic===d.topic).length>=2)
+        verifyStudy(d.topic||d.question);
+    }
+  }catch(_){}
+  finally{QUIZ.busy=false; QUIZ._res=null;}
+}
+$('quizBtn').onclick=()=>{
+  QUIZ.on=!QUIZ.on;
+  $('quizBtn').textContent='Quiz: '+(QUIZ.on?'on':'off');
+  $('quizBtn').setAttribute('aria-pressed',String(QUIZ.on));
+  chatMsg('sys',QUIZ.on
+    ?'&#9673; quiz on — after each chapter, one check question grounded in '
+      +'what was actually taught. A miss is re-explained in animation; two '
+      +'misses on one point and the tutor goes to study it.'
+    :'quiz off'+(QUIZ.asked?' — '+QUIZ.right+'/'+QUIZ.asked+' so far':''));
+};
+
 $('verifyBtn').onclick=()=>{
   /* mid-run the button is the escape hatch: skip THIS step, keep the mode —
      strict coaching must gate the lesson, not imprison the student */
@@ -5370,13 +5477,39 @@ addEventListener('pagehide',()=>{coachRelease();verifyRelease();});
 
 /* ?preset=world|both|fix|move|curve|anim|learn — deep-link into a preset,
    so a demo is one URL rather than one URL plus a click. */
+/* the engaging tutorial, simulated end to end: three short chapters that
+   exercise the WHOLE loop — anatomy-figure demonstration, camera-verified
+   body and hand steps, quiz-able narration, interruptible throughout.
+   ?preset=practice, or turn Verify/Quiz on first for the full experience. */
+const HOW_PRACTICE=[
+ {narration:"This is practice mode. I demonstrate each step, then it is "
+   +"your turn: the camera checks it before we move on — and you can "
+   +"interrupt me with a question at any moment, even mid-squat.",
+  title:"how practice works",mode:"skeleton",seconds:10,
+  motion_steps:["Stand tall with your feet shoulder-width apart"],
+  muscles:["core"]},
+ {narration:"First exercise, the squat. Sit back and down keeping your "
+   +"back flat, then drive up through the heels. Your quads, glutes and "
+   +"core do the work.",
+  title:"the squat",mode:"skeleton",seconds:12,
+  motion_steps:["Squat down keeping your back flat",
+                "Stand back up driving through the heels"],
+  muscles:["quads","glutes","core"]},
+ {narration:"Now the fingers. Pinch your thumb and index finger together, "
+   +"then spread the hand wide — the hand tracker is watching for real "
+   +"movement, not a still hand.",
+  title:"hand control",mode:"hand",seconds:10,
+  hand_steps:["Pinch the thumb and index finger together",
+              "Spread the fingers wide"]}];
 const PRESETS={world:["one 3D room (LineFORM + generated footage)",()=>HOW_WORLD],
                both:["body skeleton and hand gestures together",()=>HOW_BOTH],
                fix:["fixing a slipped bicycle chain",()=>FIX_CHAIN],
                move:["how motion works (3D skeleton + gestures)",()=>HOW_MOVE],
                curve:["actuated curve interfaces (LineFORM)",()=>HOW_CURVE],
                anim:["how I animate",()=>HOW_ANIM],
-               learn:["how I learn (crawler + hivemind)",()=>HOW_LEARN]};
+               learn:["how I learn (crawler + hivemind)",()=>HOW_LEARN],
+               practice:["practice: verified, quizzed, interruptible",
+                         ()=>HOW_PRACTICE]};
 /* ?mine=<youtube url> deep-links a mined lesson the same way, and
    ?coach=<what to practise> opens straight into a live session — one URL
    instead of a URL plus typing plus a click, which is also what makes the

@@ -1598,6 +1598,63 @@ def graph_retrieve():
                     "nodes": HM.retrieve_ids(q, k=2), "stats": HM.stats()})
 
 
+# ------------------------------------------------------------- quiz
+#
+# The knowledge loop's mirror of camera verification: after a chapter is
+# WATCHED, the student is asked whether it was LEARNED. Questions are
+# grounded in the hivemind — the book's, the video's, the stream's own
+# steps — so the quiz tests what was actually taught, not model trivia.
+
+QUIZ_SYS = """You write ONE check question for a student who just watched a chapter of an interactive video lesson. Respond with ONLY strict JSON, no markdown fences:
+{"question":"one short spoken-friendly question","choices":["...","...","...","..."],"answer":0,"why":"one sentence explaining the correct answer","topic":"2-4 words naming the knowledge point"}
+Rules:
+- Test the TAUGHT content. When source material is provided, the question and its correct answer must come from IT, nearly verbatim — never from general knowledge that contradicts it.
+- Practical, applied phrasing ("what do you do when...", "which muscles drive..."), not trivia.
+- Exactly 4 choices, one clearly correct, the distractors plausible but wrong.
+- Everything short enough to be read aloud."""
+
+
+@app.post("/api/quiz")
+def quiz_gen():
+    """{"title","narration","topic"} -> one grounded multiple-choice check.
+
+    -> {"question","choices":[...],"answer":idx,"why","topic","grounded"}"""
+    if not API_KEY:
+        return jsonify({"disabled": True})
+    p = request.get_json(silent=True) or {}
+    title = str(p.get("title") or "")[:160]
+    narration = str(p.get("narration") or "")[:600]
+    topic = str(p.get("topic") or "")[:160]
+    ctx = ""
+    try:
+        ctx = HM.retrieve(f"{title} {narration}"[:300], k=2) or ""
+    except Exception:
+        pass
+    try:
+        r = requests.post(ANTHROPIC_URL, timeout=60, headers={
+            "x-api-key": API_KEY, "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"},
+            json={"model": "claude-sonnet-4-6", "max_tokens": 700,
+                  "system": QUIZ_SYS,
+                  "messages": [{"role": "user", "content":
+                      f"Lesson topic: {topic}\nChapter: {title}\n"
+                      f"What was said: {narration}"
+                      + (f"\n\nSource material:\n{ctx[:2000]}" if ctx else "")}]})
+        raw = "".join(b.get("text", "") for b in r.json().get("content", [])
+                      if b.get("type") == "text")
+        q = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+        ch = [str(c)[:160] for c in (q.get("choices") or [])][:4]
+        ai = int(q.get("answer") or 0)
+        if len(ch) < 2 or not (0 <= ai < len(ch)) or not q.get("question"):
+            raise ValueError("malformed question")
+        return jsonify({"question": str(q["question"])[:300], "choices": ch,
+                        "answer": ai, "why": str(q.get("why") or "")[:300],
+                        "topic": str(q.get("topic") or title)[:80],
+                        "grounded": bool(ctx)})
+    except Exception as e:
+        return jsonify({"error": {"message": f"no question: {e}"}}), 502
+
+
 @app.post("/api/correct")
 def graph_correct():
     """Capture a disagreement. This is the loop that compounds.

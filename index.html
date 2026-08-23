@@ -5204,6 +5204,12 @@ function verifyEscalate(now){
      band, resets the clock and sends the tracked faults to the coach */
   VERIFY.round++; VERIFY.stepT0=now; VERIFY.hold=0;
   VERIFY.saidHalf=false; VERIFY.inRange=false; VERIFY.streak=0;
+  /* the missed round's measured faults, kept for the polish pass */
+  const perNow=VERIFY.per[VERIFY.si];
+  if(perNow&&(VERIFY.cues||[]).length)
+    perNow.cues=VERIFY.cues
+      .map(c=>c.label+(c.off?' off by '+c.off+' deg':'')
+             +(c.text?' — '+c.text:'')).slice(0,3);
   if(VERIFY.zbuf.length){lnnTeachOutcome(VERIFY.zbuf,0);   /* a miss, learned */
     lnnTeachNeed(VERIFY.zbuf,1);           /* a coached round = detail needed */
     VERIFY.zbuf=[];}
@@ -5465,6 +5471,34 @@ async function verifyChapter(sc){
       +(extra?', '+extra+' coached round'+(extra>1?'s':'')
         +' — the pass band adapted to you':'')
       +(hit===out.per.length?'':' — moving on; ask and it will re-explain'));
+    /* THE POLISH PASS: strict coaching does not call a mess "done". Any
+       step that was missed — or landed only after coached rounds — gets
+       re-explained as a full animated chapter grounded in its MEASURED
+       faults, and that answer chapter carries its own camera check: the
+       fix is physically verified before the lesson proceeds. Once per
+       chapter, so an off day polishes without imprisoning. */
+    if(VERIFY.strict&&!sc._polished&&!lessonAbort&&pendingSeek==null
+       &&!answering){
+      const messy=out.per.map((p,i)=>({p:p,st:steps[i]}))
+        .filter(x=>x.st&&(!x.p.ok||x.p.rounds>0));
+      if(messy.length){
+        sc._polished=true;
+        const worst=messy.slice().sort((a,b)=>
+          ((a.p.ok?1:0)-(b.p.ok?1:0))||((b.p.rounds||0)-(a.p.rounds||0)))[0];
+        chatMsg('sys','&#9678; polish pass — '+messy.length+' step(s) were '
+          +'not clean: '+messy.map(x=>'"'+x.st.text.slice(0,36)+'" ('
+            +(x.p.ok?x.p.rounds+' coached round'+(x.p.rounds>1?'s':'')
+                    :'missed')+')').join(', ')
+          +' — re-explaining the roughest one, then the camera checks '
+          +'the fix');
+        $('q').value='My attempt at "'+worst.st.text+'" was not clean'
+          +(worst.p.cues&&worst.p.cues.length
+            ?' — the camera measured: '+worst.p.cues.join('; '):'')
+          +'. Show me exactly how to do it right, step by step, with an '
+          +'animation. Make the correction explicit.';
+        await handleQuestion();
+      }
+    }
     return false;
   }catch(e){
     chatMsg('sys','&#9888; camera verify skipped — '+(e&&e.message||e));
@@ -5487,6 +5521,13 @@ function verifyNext(hit){
   VERIFY.predLow=0; VERIFY.earlyHinted=false;
   per[VERIFY.si].ok=per[VERIFY.si].ok||hit;
   per[VERIFY.si].rounds=VERIFY.round;
+  /* the faults as MEASURED — the polish pass re-explains from these, not
+     from a guess. A clean landing has no cues, so it never overwrites the
+     faults the missed rounds recorded. */
+  if((VERIFY.cues||[]).length)
+    per[VERIFY.si].cues=VERIFY.cues
+      .map(c=>c.label+(c.off?' off by '+c.off+' deg':'')
+             +(c.text?' — '+c.text:'')).slice(0,3);
   /* a clean first-round pass earns the band back — adaptation flows both
      ways, or it would only ever get easier */
   if(hit&&VERIFY.round===0)

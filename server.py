@@ -17,11 +17,15 @@ Deploy anywhere that runs Python (Render, Railway, Fly.io, a VPS):
     gunicorn -w 2 -b 0.0.0.0:8000 server:app
 """
 
+import hashlib
+import json
 import math
 import os
 import re
+import sys
+import threading
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 from flask import Flask, Response, request, jsonify, send_from_directory
 import requests
@@ -101,6 +105,9 @@ def health():
                     # synthesises, and every clip says which one it was
                     "hand_tracking": handform.tracker_available(),
                     "hand_poses": sorted(handform.HAND_POSES),
+                    # the vendored MoneyPrinterTurbo pipeline: neural
+                    # narration and real stock footage, live in the lesson
+                    "mpt": mpt_status(),
                     "devices": {k: v["name"] for k, v in lineform.DEVICES.items()},
                     "shapes": lineform.SHAPES,
                     "gestures": sorted(motion.PRIMITIVES),
@@ -235,6 +242,864 @@ def media_proxy():
     return Response(r.iter_content(64 * 1024), status=r.status_code,
                     content_type=r.headers.get("Content-Type",
                                                "application/octet-stream"))
+
+
+# ------------------------------------------- MoneyPrinterTurbo (mpt/) bridge
+#
+# MoneyPrinterTurbo is vendored whole in mpt/ and imported as a library, not
+# run as a second server. It supplies the two things the board could not get
+# for itself, and both go INTO the lesson rather than into an export:
+#
+#   /api/tts     real neural narration WITH WORD TIMINGS, replacing the
+#                browser's speechSynthesis. Edge's voices need no API key,
+#                so unlike every other generated asset here this one is free.
+#   /api/stock   footage that was really filmed, under any chapter and under
+#                any interrupt answer — seconds instead of 30-90s, free
+#                instead of paid, and a real pinch instead of a plausible one.
+#
+# There is deliberately no MP4 export. The point is not to produce a file at
+# the end; it is that the explanation itself is real film, narrated by a real
+# voice, with the annotator's marker strokes drawn on top of both — including
+# when the student interrupts and the answer brings its own footage.
+#
+# Everything is imported LAZILY and never at boot. mpt/ pulls in moviepy,
+# edge_tts, openai and pydantic; a deployment without them must still serve
+# the board, so every route below degrades exactly the way /api/video does
+# without REPLICATE_API_TOKEN — {"disabled": true, "why": ...} — and the
+# frontend falls back rather than erroring.
+
+MPT_DIR = os.path.join(ROOT, "mpt")
+# MPT names voices "<edge voice>-<Gender>"; parse_voice_name strips the suffix.
+MPT_VOICES = {"en": os.environ.get("MPT_VOICE_EN", "en-US-JennyNeural-Female"),
+              "id": os.environ.get("MPT_VOICE_ID", "id-ID-GadisNeural-Female")}
+MAX_TTS_CHARS = 1200       # a chapter's narration is 1-2 sentences, not a book
+MAX_STOCK_CLIPS = 4        # same cost ceiling as MAX_STEP_CLIPS above
+
+_MPT = {"tried": False, "mods": None, "why": ""}
+
+
+def _mpt():
+    """Import the vendored pipeline once. -> (modules dict or None, why)."""
+    if not _MPT["tried"]:
+        _MPT["tried"] = True
+        if not os.path.isdir(MPT_DIR):
+            _MPT["why"] = "mpt/ is not vendored next to server.py"
+        else:
+            try:
+                if MPT_DIR not in sys.path:
+                    # appended, not inserted: mpt/ has its own top-level `app`
+                    # package and this file must keep resolving its own modules
+                    sys.path.append(MPT_DIR)
+                from app.config import config as _cfg
+                from app.utils import utils as _utils
+                from app.models import schema as _schema
+                from app.services import voice as _voice
+                from app.services import material as _material
+                from app.services import video as _video
+                _MPT["mods"] = {"config": _cfg, "utils": _utils,
+                                "schema": _schema, "voice": _voice,
+                                "material": _material, "video": _video}
+            except Exception as e:          # missing dep, bad config, ...
+                _MPT["why"] = f"{type(e).__name__}: {e}"
+    return _MPT["mods"], _MPT["why"]
+
+
+def mpt_status():
+    """What /health reports: whether the pipeline imports, and which providers
+    actually have keys. Voice is the interesting one — it is the only
+    generated asset in this whole app that costs nothing."""
+    mods, why = _mpt()
+    if not mods:
+        return {"ok": False, "why": why or "unavailable"}
+    stock_why = ""
+    try:
+        mods["material"].get_api_key("pexels_api_keys")
+    except Exception as e:
+        stock_why = next((ln for ln in str(e).splitlines() if ln.strip()),
+                         "no api key").strip()
+    return {"ok": True, "tts": True, "voices": MPT_VOICES,
+            "stock": not stock_why, "stock_why": stock_why,
+            # text-to-video generation of the actions themselves — the
+            # Make-A-Video lineage, via the same Replicate model /api/video
+            # uses. Paid per clip, so reported separately from stock.
+            "generate": bool(REPLICATE_TOKEN),
+            "perceive": bool(API_KEY),
+            # the look, not just the assets: the page draws its captions with
+            # MoneyPrinterTurbo's own fonts and subtitle styling so a chapter
+            # on the board reads like one of its rendered shorts
+            "graphics": True, "fonts": mpt_fonts(), "subtitle": MPT_SUBTITLE,
+            "transitions": MPT_TRANSITIONS}
+
+
+# MoneyPrinterTurbo's subtitle look, as its VideoParams defaults define it:
+# white fill, black outline, sat at the bottom of the frame. These are the
+# numbers its renderer uses, kept here so the board and a rendered short would
+# put the same words in the same place in the same face.
+MPT_SUBTITLE = {"font": os.environ.get("MPT_FONT", "BeVietnamPro-Bold.ttf"),
+                "size": 60, "fore": "#FFFFFF", "stroke": "#000000",
+                "stroke_width": 1.5, "position": "bottom",
+                "custom_position": 70.0,
+                # its optional rounded plate, drawn under the text
+                "background": False, "background_color": "#000000",
+                "background_alpha": 140, "background_radius": 16,
+                # which of its transitions a chapter enters on; "Shuffle"
+                # picks per chapter the way its renderer picks per clip
+                "transition": os.environ.get("MPT_TRANSITION", "FadeIn")}
+
+# app/services/utils/video_effects.py — the transitions its renderer applies
+# between clips. The board cuts between chapters, so the same names mean the
+# same thing here.
+MPT_TRANSITIONS = ["None", "FadeIn", "FadeOut", "SlideIn", "SlideOut",
+                   "ZoomIn", "ZoomOut"]
+
+
+def _font_dir():
+    return os.path.join(MPT_DIR, "resource", "fonts")
+
+
+def mpt_fonts():
+    """The faces MoneyPrinterTurbo ships. -> [{"file","name","latin"}, ...]
+
+    Reported so the page can @font-face them instead of falling back to
+    whatever the operating system happens to have. `latin` matters because
+    half of these are CJK faces: a lesson in English wants BeVietnamPro,
+    not STHeiti, and picking blind would letterbox the captions in tofu."""
+    try:
+        files = sorted(f for f in os.listdir(_font_dir())
+                       if f.lower().endswith((".ttf", ".otf", ".ttc")))
+    except OSError:
+        return []
+    return [{"file": f, "name": os.path.splitext(f)[0],
+             # .ttc collections here are the CJK ones; the .ttf faces are the
+             # Latin-capable ones, and the browser cannot load .ttc at all
+             "latin": f.lower().endswith((".ttf", ".otf"))} for f in files]
+
+
+@app.get("/api/mpt/font")
+def mpt_font():
+    """Serve one of MoneyPrinterTurbo's bundled fonts to the page.
+
+    Confined to resource/fonts by name match against the directory listing —
+    not by string surgery on the request — so there is no path to walk."""
+    want = request.args.get("f", "")
+    if want not in {f["file"] for f in mpt_fonts()}:
+        return jsonify({"error": {"message": "unknown font"}}), 404
+    return send_from_directory(_font_dir(), want, conditional=True,
+                               max_age=86400)
+
+
+def _tutor_dir():
+    """Everything this bridge writes lives under one directory, so
+    /api/mpt/media can serve from it without exposing the rest of the disk."""
+    d = os.path.join(MPT_DIR, "storage", "tutor")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _tutor_url(path):
+    """A same-origin URL for a file inside the tutor directory."""
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(_tutor_dir()))
+    return "/api/mpt/media?f=" + quote(rel.replace(os.sep, "/"))
+
+
+@app.get("/api/mpt/media")
+def mpt_media():
+    """Serve a file this bridge generated, same-origin.
+
+    Same reason /api/media proxies Replicate rather than linking it: a
+    cross-origin clip drawn onto the board taints the canvas, and a tainted
+    canvas cannot be captureStream()'d — the Record button would die the
+    moment a lesson used stock footage. Resolved and confined to
+    mpt/storage/tutor so a crafted name cannot walk out of it."""
+    base = os.path.realpath(_tutor_dir())
+    path = os.path.realpath(os.path.join(base, request.args.get("f", "")))
+    if not path.startswith(base + os.sep) or not os.path.isfile(path):
+        return jsonify({"error": {"message": "not found"}}), 404
+    return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                               conditional=True)
+
+
+@app.post("/api/tts")
+def tts_gen():
+    """Neural narration with word timings.
+
+    {"text": "...", "lang": "en"|"id", "voice": "...", "rate": 1.0}
+    -> {"audio": "/api/mpt/media?f=...", "seconds": 3.02,
+        "cues": [{"t": 0.1, "d": 0.32, "w": "Tighten"}, ...]}
+
+    The cues are why this is worth a round trip rather than just an <audio>
+    src. The avatar's lipsync and the caption highlighting are both driven by
+    word boundaries, which speechSynthesis emits and a plain audio element
+    does not — without them the mouth would flap on a timer while a real
+    voice said something else. Edge gives them for free.
+
+    Cached on a hash of (voice, rate, text), so a replayed chapter and a
+    re-run lesson cost one file read.
+    """
+    mods, why = _mpt()
+    if not mods:
+        return jsonify({"disabled": True, "why": why})
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or "").strip()[:MAX_TTS_CHARS]
+    if not text:
+        return jsonify({"error": {"message": "text required"}}), 400
+    lang = str(body.get("lang") or "en")
+    voice = str(body.get("voice") or MPT_VOICES.get(lang) or MPT_VOICES["en"])
+    try:
+        rate = max(0.5, min(2.0, float(body.get("rate", 1.0))))
+    except (TypeError, ValueError):
+        rate = 1.0
+
+    key = hashlib.sha1(f"{voice}|{rate}|{text}".encode("utf-8")).hexdigest()[:16]
+    mp3 = os.path.join(_tutor_dir(), f"tts-{key}.mp3")
+    side = mp3 + ".json"
+    if os.path.isfile(mp3) and os.path.getsize(mp3) and os.path.isfile(side):
+        try:
+            with open(side, encoding="utf-8") as fh:
+                return jsonify(json.load(fh))
+        except (OSError, ValueError):
+            pass                                    # fall through and rewrite
+    try:
+        sm = mods["voice"].tts(text, voice, rate, mp3)
+        if sm is None or not os.path.isfile(mp3) or not os.path.getsize(mp3):
+            return jsonify({"error": {"message": "tts produced no audio"}}), 502
+        cues = []
+        for c in (getattr(sm, "cues", None) or []):
+            t0 = c.start.total_seconds()
+            cues.append({"t": round(t0, 3),
+                         "d": round(max(0.0, c.end.total_seconds() - t0), 3),
+                         "w": str(c.content)})
+        seconds = float(mods["voice"].get_audio_duration(sm))
+    except Exception as e:
+        return jsonify({"error": {"message": f"tts failed: {e}"}}), 502
+    out = {"audio": _tutor_url(mp3), "seconds": round(seconds, 3),
+           "cues": cues, "voice": voice}
+    try:
+        with open(side, "w", encoding="utf-8") as fh:
+            json.dump(out, fh)
+    except OSError:
+        pass                     # the audio is what matters; the cache is not
+    return jsonify(out)
+
+
+# ------------------------------------------------ is this a how-to at all?
+#
+# The action reel is film of a MOVEMENT — hands doing a thing, cut action by
+# action. That is the strongest explanation this board has for a procedure and
+# the WORST one for an idea: "how photosynthesis works" has no gesture to
+# film, and a stock search for it returns pretty greenery that illustrates
+# nothing. So the reel is gated on the lesson actually being technical
+# how-to — a wiki-style procedure someone performs — rather than offered for
+# every topic and quietly wasting a search on the ones it cannot serve.
+
+# Procedural verbs: what a person DOES with their hands. Deliberately verbs,
+# not topics — "install a water pump" is a procedure, "the water cycle" is not.
+_HOWTO_VERBS = {
+    "fix", "repair", "replace", "install", "remove", "change", "clean",
+    "build", "make", "assemble", "attach", "mount", "adjust", "tighten",
+    "loosen", "connect", "wire", "solder", "paint", "cut", "drill", "sand",
+    "weld", "patch", "seal", "unclog", "sharpen", "lubricate", "grease",
+    "bleed", "flush", "swap", "fit", "wrap", "tie", "sew", "glue", "screw",
+    "bolt", "calibrate", "reset", "restore", "service", "test", "measure",
+}
+# Explanatory openers: the question is about a mechanism, not a task.
+_CONCEPT_MARKERS = ("how does", "how do", "why does", "why do", "why is",
+                    "what is", "what are", "explain", "works", "history of",
+                    "difference between", "theory", "causes of")
+
+
+@app.post("/api/howto")
+def howto_gate():
+    """Is this topic a technical how-to, or a concept? -> {"technical": bool}
+
+    {"topic": "how to replace a bicycle chain"}
+      -> {"technical": true, "why": "procedural verb 'replace'",
+          "task": "Replace a bicycle chain", "steps": 7}
+
+    Two independent signals, because either alone is wrong often enough:
+
+    - THE GRAPH. If the hivemind already holds a task whose steps match this
+      topic, it is a procedure by demonstration — somebody wrote the steps
+      down. This is the strong signal and it needs no keyword list.
+    - THE PHRASING. A procedural verb with no explanatory opener in front of
+      it. "Replace a chain" passes; "how does a chain work" does not, and
+      neither does "the history of chains", which contains no verb at all.
+
+    Reported with the reason so the page can say WHY a lesson is getting film
+    of hands or a diagram, instead of the choice looking arbitrary."""
+    topic = str((request.get_json(silent=True) or {}).get("topic", "")).strip()
+    if not topic:
+        return jsonify({"error": {"message": "topic required"}}), 400
+    low = topic.lower()[:300]
+
+    # the graph first: a matching task WITH steps settles it
+    task, nsteps = "", 0
+    try:
+        hits = HM.find_steps(topic, k=5)
+        if hits and hits[0]["score"] > 0:
+            task = hits[0].get("task", "")
+            nsteps = sum(1 for h in hits if h.get("task") == task)
+    except Exception:                                   # graph is advisory
+        hits = []
+    # Step-level retrieval scores any step sharing a token, so a topic can
+    # land on a procedure it has nothing to do with — "replace a bicycle
+    # chain" matching "Build a Large Modern Minecraft House" on the strength
+    # of common words. Believe the graph only when the TASK ITSELF is about
+    # the same thing, or the reason given is nonsense and, worse, a concept
+    # could inherit a procedure's verdict by accident.
+    if task and nsteps >= 2:
+        want, have = set(toks(topic)), set(toks(task))
+        if want & have:
+            return jsonify({"technical": True, "task": task, "steps": nsteps,
+                            "why": f"the hivemind already has {nsteps} steps "
+                                   f"for {task!r}"})
+        task, nsteps = "", 0        # unrelated match: judge on the words alone
+
+    concept = any(m in low for m in _CONCEPT_MARKERS)
+    # toks() STEMS, so the verb list has to be stemmed by the same function or
+    # "replace" arrives as "replac" and matches nothing. Stemming both sides
+    # also buys the inflections for free: replacing, tightened, unclogged.
+    words = set(toks(low))
+    verb = next((v for v in sorted(_HOWTO_VERBS)
+                 if words & set(toks(v))), "")
+    # "how to fix X" is procedural even though it starts with "how"
+    imperative = low.startswith("how to ") or low.startswith("how do i ")
+    technical = bool(verb) and (imperative or not concept)
+    return jsonify({"technical": technical, "task": task, "steps": nsteps,
+                    "why": (f"procedural verb {verb!r}" if technical
+                            else "reads as a concept, not a procedure"
+                                 if concept else "no procedural verb")})
+
+
+@app.post("/api/stock")
+def stock_gen():
+    """Real footage per step, from a stock library instead of a diffusion model.
+
+    {"terms": ["seat the chain on the teeth", ...], "seconds": 5}
+    -> {"videos": [url|null, ...], "errors": [...], "source": "pexels"}
+
+    Deliberately the SAME response shape as /api/videos, so a world chapter's
+    step_videos machinery does not care which provider filled the screen — a
+    failed term comes back null, that step's screen goes quiet, and the lesson
+    carries on, exactly as it does with diffusion.
+
+    One search per step, first unused result wins: the clips stay in step
+    order and two steps never show the same footage.
+    """
+    mods, why = _mpt()
+    if not mods:
+        return jsonify({"disabled": True, "why": why})
+    body = request.get_json(silent=True) or {}
+    terms = body.get("terms") or body.get("prompts")
+    if not isinstance(terms, list) or not terms:
+        return jsonify({"error": {"message": "terms required"}}), 400
+    terms = [str(t).strip()[:120] for t in terms[:MAX_STOCK_CLIPS]]
+    if not all(terms):
+        return jsonify({"error": {"message": "empty term in list"}}), 400
+    try:
+        least = max(1, min(20, int(body.get("seconds", 4))))
+    except (TypeError, ValueError):
+        least = 4
+    source = str(body.get("source") or "pexels")
+
+    material, schema = mods["material"], mods["schema"]
+    search = {"pexels": material.search_videos_pexels,
+              "pixabay": material.search_videos_pixabay,
+              "coverr": material.search_videos_coverr}.get(source)
+    if search is None:
+        return jsonify({"error": {"message": f"unknown source {source}"}}), 400
+    try:
+        material.get_api_key(f"{source}_api_keys")
+    except Exception as e:
+        # no key is not something the lesson should die on — it is the same
+        # "try it with no token at all" path the diffusion routes take
+        return jsonify({"disabled": True,
+                        "why": next((ln for ln in str(e).splitlines()
+                                     if ln.strip()), "no api key").strip()})
+
+    # the board is a wide surface: portrait stock would letterbox badly
+    aspect = schema.VideoAspect.landscape
+    urls, errs, used = [], [], set()
+    for term in terms:
+        try:
+            found = search(term, least, aspect) or []
+        except Exception as e:
+            urls.append(None); errs.append(f"{term}: {e}"); continue
+        pick = next((m for m in found if m.url and m.url not in used), None)
+        if pick is None:
+            urls.append(None); errs.append(f"{term}: nothing found"); continue
+        used.add(pick.url)
+        try:
+            local = material.save_video(pick.url, save_dir=_tutor_dir())
+        except Exception as e:
+            urls.append(None); errs.append(f"{term}: {e}"); continue
+        ok = bool(local) and os.path.isfile(local) and os.path.getsize(local) > 0
+        urls.append(_tutor_url(local) if ok else None)
+        errs.append(None if ok else f"{term}: download failed")
+    return jsonify({"videos": urls, "errors": errs, "source": source})
+
+
+# -------------------------------------------- the edited action reel (MPT)
+#
+# /api/reel is MoneyPrinterTurbo's actual EDIT, run per chapter and played
+# inside the lesson. The browser-side reel cuts live between raw stock clips;
+# this composes them properly, the way its renderer composes a short:
+#
+#   each ACTION is spoken by the neural voice, and its clip is trimmed to
+#   EXACTLY the length of that sentence — the shot lasts as long as the
+#   description does, by construction, because the audio's measured duration
+#   IS the shot length. The description is burned in as the subtitle of its
+#   own shot (MPT's font, outline and position), the narration is muxed into
+#   the file, and the shots are joined with its fade transition.
+#
+# The result is one mp4 per chapter that the board plays as the chapter —
+# not an export, part of the lesson — with the sketch annotations still drawn
+# on top by the canvas. Minutes of ffmpeg, so it is a job the page polls,
+# with file-based state because gunicorn runs two workers and the poll lands
+# on whichever one is free.
+
+MAX_REEL_ACTIONS = 5
+# generate_video sizes and positions its subtitle strip for the resolution
+# params.video_aspect names — 1920x1080 for landscape — so the cut has to be
+# encoded at exactly that, or the strip lands partly outside a smaller frame
+# and dies inside the compositor with a zero-height broadcast error.
+REEL_SIZE = (1920, 1080)
+
+
+def _reel_state(job, **kw):
+    d = os.path.join(_tutor_dir(), f"reel-{job}")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "state.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        state = {}
+    state.update(kw)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+    except OSError:
+        pass
+    return state
+
+
+def _srt_time(sec):
+    ms = int(round(sec * 1000))
+    return "%02d:%02d:%02d,%03d" % (ms // 3600000, ms // 60000 % 60,
+                                    ms // 1000 % 60, ms % 1000)
+
+
+def _fit_clip(clip, w, h):
+    """Cover-fit a stock clip to the frame: scale to fill, crop the overflow
+    about the centre — the same letterbox-free treatment combine_videos gives
+    its materials, without stretching anything."""
+    cw, ch = clip.size
+    scale = max(w / cw, h / ch)
+    clip = clip.resized((int(round(cw * scale)), int(round(ch * scale))))
+    return clip.cropped(x_center=clip.size[0] / 2, y_center=clip.size[1] / 2,
+                        width=w, height=h)
+
+
+def _hold_to(clip, seconds):
+    """A shot lasts as long as its sentence. Footage longer than the sentence
+    is trimmed; footage shorter is looped — a 3s clip under a 7s instruction
+    plays twice and a bit rather than freezing or going dark."""
+    from moviepy import concatenate_videoclips
+    if clip.duration >= seconds:
+        return clip.subclipped(0, seconds)
+    reps = [clip] * (int(seconds / clip.duration) + 1)
+    return concatenate_videoclips(reps).subclipped(0, seconds)
+
+
+def _t2v_prompt(text):
+    """An action's instruction, rewritten as a text-to-video prompt.
+
+    Make-A-Video's premise (arXiv:2209.14792) is exactly this app's need:
+    the model learned what the world looks like from text-image pairs and how
+    it MOVES from unlabeled video, so a sentence describing an action becomes
+    a clip OF that action — not stock that happens to be near it. The framing
+    language mirrors the paper's prompt style: subject, motion, one shot."""
+    return (f"Tight macro shot of a pair of real hands: {text}. Photoreal, "
+            f"natural workshop light, shallow depth of field, one continuous "
+            f"take, camera almost still, no text or captions in frame.")
+
+
+def _t2v_fetch(prompt, dest):
+    """Generate one clip and pull it local. -> path or None, never raises."""
+    try:
+        url, err = _replicate(VIDEO_MODEL, {"prompt": prompt}, 420)
+        if not url:
+            return None
+        r = requests.get(url, stream=True, timeout=120)
+        if r.status_code != 200:
+            return None
+        with open(dest, "wb") as fh:
+            for chunk in r.iter_content(256 * 1024):
+                fh.write(chunk)
+        return dest if os.path.getsize(dest) else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------- perceive: look before you cut
+#
+# The editor used to trust search ranking blindly: first Pexels hit, cut from
+# t=0, hope it shows the action. AVI's Retrieve-Perceive-Review loop
+# (arXiv:2511.14446) names exactly what was missing — captions and rankings
+# are "unreliable hints for location only", and an answer needs VISUAL
+# confirmation. So the reel editor now perceives its footage before cutting:
+# a handful of frames from each candidate clip go to a vision model, which
+# scores whether the clip actually shows the action, WHERE in the clip it
+# shows best (its boundary_detect), and where the subject sits in frame (its
+# grounding step) — which is what lets the sketch annotations land on the
+# real pixels instead of an assumed centre.
+
+PERCEIVE_MODEL = "claude-haiku-4-5-20251001"   # cheap, fast, has eyes
+PERCEIVE_MIN_SCORE = 4        # below this the clip does not show the action
+PERCEIVE_CANDIDATES = 2       # clips judged per action before settling
+
+
+def _clip_frames_b64(video_mod, path, n=3, width=480):
+    """n JPEG frames, evenly spaced, small. -> [(t_seconds, b64), ...]"""
+    import base64
+    import io as _io
+    from PIL import Image
+    out = []
+    clip = None
+    try:
+        clip = video_mod._open_video_clip_quietly(path, audio=False)
+        d = max(clip.duration or 1.0, 0.5)
+        for k in range(n):
+            t = d * (k + 1) / (n + 1)
+            im = Image.fromarray(clip.get_frame(t))
+            im.thumbnail((width, width * 3))
+            buf = _io.BytesIO()
+            im.save(buf, format="JPEG", quality=70)
+            out.append((round(t, 1),
+                        base64.b64encode(buf.getvalue()).decode("ascii")))
+    except Exception:
+        return []
+    finally:
+        if clip is not None:
+            try:
+                video_mod.close_clip(clip)
+            except Exception:
+                pass
+    return out
+
+
+def _perceive_clip(video_mod, path, action_text):
+    """Does this footage show this action? -> dict or None.
+
+    {"score": 0-10, "start": best offset seconds, "subject": "the thing",
+     "x": 1-50, "y": 1-50}   (grid matches the board's, x1y1 bottom-left)
+
+    None means the judgement could not be made (no key, no frames, bad
+    reply) — the caller then falls back to trusting the search, which is
+    exactly what it did before this existed."""
+    if not API_KEY:
+        return None
+    frames = _clip_frames_b64(video_mod, path)
+    if not frames:
+        return None
+    content = []
+    for t, b64 in frames:
+        content.append({"type": "text", "text": f"frame at {t}s:"})
+        content.append({"type": "image", "source": {
+            "type": "base64", "media_type": "image/jpeg", "data": b64}})
+    content.append({"type": "text", "text":
+        f'These frames are from one stock/generated clip. The action to '
+        f'illustrate is: "{action_text}".\n'
+        f'Answer ONLY strict JSON, no fences:\n'
+        f'{{"score": 0-10 how well this clip shows that action being '
+        f'performed (0=unrelated, 10=exactly this), "start": the frame time '
+        f'in seconds where it shows best, "subject": 2-4 words naming the '
+        f'main visible thing, "x": 1-50, "y": 1-50 grid position of that '
+        f'subject (x1y1 is bottom-left, x50y50 top-right)}}'})
+    try:
+        r = requests.post(ANTHROPIC_URL, timeout=60, headers={
+            "x-api-key": API_KEY, "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"},
+            json={"model": PERCEIVE_MODEL, "max_tokens": 200,
+                  "messages": [{"role": "user", "content": content}]})
+        if r.status_code != 200:
+            return None
+        txt = "".join(b.get("text", "") for b in r.json().get("content", [])
+                      if b.get("type") == "text")
+        m = re.search(r"\{[^{}]*\}", txt)
+        if not m:
+            return None
+        d = json.loads(m.group(0))
+        return {"score": max(0, min(10, int(d.get("score", 0)))),
+                "start": max(0.0, float(d.get("start", 0) or 0)),
+                "subject": str(d.get("subject", ""))[:60],
+                "x": max(1, min(50, int(d.get("x", 25)))),
+                "y": max(1, min(50, int(d.get("y", 25))))}
+    except Exception:
+        return None
+
+
+def _reel_run(job, actions, voice, source):
+    mods, _why = _mpt()
+    voice_mod, material = mods["voice"], mods["material"]
+    video_mod, schema = mods["video"], mods["schema"]
+    out = os.path.join(_tutor_dir(), f"reel-{job}")
+    opened = []
+    try:
+        from moviepy import (AudioFileClip, concatenate_videoclips,
+                             concatenate_audioclips)
+        from app.services.utils import video_effects
+
+        # 1. speak every action FIRST: the audio durations are the edit's
+        #    timeline, so nothing can be cut until the sentences are measured
+        _reel_state(job, state="narrating the actions", pct=10)
+        durs, audios = [], []
+        for i, a in enumerate(actions):
+            mp3 = os.path.join(out, f"act-{i}.mp3")
+            sm = voice_mod.tts(a["text"], voice, 1.0, mp3)
+            if sm is None or not os.path.isfile(mp3):
+                raise RuntimeError(f"narration failed on action {i + 1}")
+            durs.append(max(1.5, float(voice_mod.get_audio_duration(sm)) + 0.35))
+            audios.append(mp3)
+
+        # 2. film per action, from one of two sources:
+        #    GENERATED — text-to-video diffusion, the Make-A-Video lineage:
+        #    the action's own sentence becomes a clip of that action being
+        #    performed. All prompts go out concurrently, because serialising
+        #    30-90s generations would take the reel from one wait to five.
+        #    STOCK — the Pexels search. Also the per-action fallback when a
+        #    generation fails, so a dead prompt costs one shot, not the reel.
+        gen = source in ("generate", "auto") and bool(REPLICATE_TOKEN)
+        paths = [None] * len(actions)
+        if gen:
+            _reel_state(job, state="generating video of each action", pct=25)
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(actions)) as pool:
+                paths = list(pool.map(
+                    lambda ia: _t2v_fetch(_t2v_prompt(ia[1]["text"]),
+                                          os.path.join(out, f"gen-{ia[0]}.mp4")),
+                    enumerate(actions)))
+        anchors = [None] * len(actions)
+        starts = [0.0] * len(actions)
+        if not all(paths):
+            _reel_state(job, state="finding footage per action", pct=32)
+            aspect = schema.VideoAspect.landscape
+            used = set()
+            for i, a in enumerate(actions):
+                if paths[i]:
+                    # a generated clip shows the action by construction, but
+                    # perceiving it still finds the subject for annotation
+                    anchors[i] = _perceive_clip(video_mod, paths[i], a["text"])
+                    continue
+                term = (a.get("footage") or a["text"])[:120]
+                hits = []
+                try:
+                    hits = material.search_videos_pexels(term, 3, aspect) or []
+                except Exception:
+                    pass
+                # RETRIEVE gives candidates; PERCEIVE looks at their frames;
+                # REVIEW keeps the best that actually shows the action. The
+                # search ranking is a hint, never the verdict.
+                _reel_state(job, state="perceiving the footage — checking "
+                                       f"clips for action {i + 1}", pct=38)
+                best, best_path = None, None
+                fallback = None
+                seen = 0
+                for m in hits:
+                    if not m.url or m.url in used:
+                        continue
+                    try:
+                        p = material.save_video(m.url, save_dir=_tutor_dir())
+                    except Exception:
+                        continue
+                    if not (p and os.path.isfile(p)):
+                        continue
+                    if fallback is None:
+                        fallback = (m.url, p)
+                    verdict = _perceive_clip(video_mod, p, a["text"])
+                    seen += 1
+                    if verdict and (best is None
+                                    or verdict["score"] > best["score"]):
+                        best, best_path = verdict, (m.url, p)
+                    if best and best["score"] >= 8:
+                        break                      # visually confirmed; stop
+                    if seen >= PERCEIVE_CANDIDATES:
+                        break
+                if best and best["score"] >= PERCEIVE_MIN_SCORE:
+                    used.add(best_path[0]); paths[i] = best_path[1]
+                    anchors[i] = best; starts[i] = best["start"]
+                elif fallback:
+                    # no candidate was confirmed: keep the search's first
+                    # pick rather than a dark screen, but say so
+                    used.add(fallback[0]); paths[i] = fallback[1]
+        if not any(paths):
+            raise RuntimeError("no footage — generation and stock both empty")
+
+        # 3. the edit: shot i = clip i held for exactly durs[i], fading in —
+        #    a missing clip inherits the previous shot's footage so the reel
+        #    never goes dark mid-sentence
+        _reel_state(job, state="cutting the shots to the narration", pct=55)
+        w, h = REEL_SIZE
+        shots, last = [], next(p for p in paths if p)
+        for i, p in enumerate(paths):
+            last = p or last
+            src = video_mod._open_video_clip_quietly(last, audio=False)
+            opened.append(src)
+            seg = src
+            if p and starts[i] > 0 and starts[i] < (src.duration or 0) - 1.0:
+                # start where the vision pass said the action shows best —
+                # its boundary_detect, aimed at our one need
+                seg = src.subclipped(starts[i], src.duration)
+            shot = _hold_to(_fit_clip(seg, w, h), durs[i])
+            if i:                       # its fade between shots, not a hard cut
+                shot = video_effects.fadein_transition(shot, 0.3)
+            shots.append(shot)
+        combined = concatenate_videoclips(shots)
+        narr = concatenate_audioclips([AudioFileClip(p) for p in audios])
+        combined_path = os.path.join(out, "combined.mp4")
+        _reel_state(job, state="encoding the cut", pct=65)
+        combined.write_videofile(combined_path, codec="libx264", fps=24,
+                                 audio=False, preset="veryfast", threads=2,
+                                 logger=None)
+        narr_path = os.path.join(out, "narration.mp3")
+        narr.write_audiofile(narr_path, logger=None)
+
+        # 4. each action's DESCRIPTION is the subtitle of its own shot
+        srt_path = os.path.join(out, "reel.srt")
+        t = 0.0
+        with open(srt_path, "w", encoding="utf-8") as fh:
+            for i, a in enumerate(actions):
+                fh.write("%d\n%s --> %s\n%s\n\n" % (
+                    i + 1, _srt_time(t), _srt_time(t + durs[i]), a["text"]))
+                t += durs[i]
+
+        # 5. MoneyPrinterTurbo's own finishing pass: burns the subtitles in
+        #    its font and outline and muxes the narration
+        _reel_state(job, state="burning subtitles, muxing the voice", pct=80)
+        params = schema.VideoParams(
+            video_subject="action reel", video_script=" ".join(
+                a["text"] for a in actions),
+            video_aspect=schema.VideoAspect.landscape, voice_name=voice,
+            subtitle_enabled=True, font_name=MPT_SUBTITLE["font"],
+            font_size=MPT_SUBTITLE["size"],
+            text_fore_color=MPT_SUBTITLE["fore"],
+            stroke_color=MPT_SUBTITLE["stroke"],
+            stroke_width=MPT_SUBTITLE["stroke_width"],
+            subtitle_position=MPT_SUBTITLE["position"], bgm_type="")
+        final = os.path.join(out, "reel.mp4")
+        video_mod.generate_video(video_path=combined_path,
+                                 audio_path=narr_path,
+                                 subtitle_path=srt_path,
+                                 output_file=final, params=params)
+        if not os.path.isfile(final):
+            raise RuntimeError("the encoder produced no file")
+        cues, t = [], 0.0
+        for i, a in enumerate(actions):
+            cue = {"start": round(t, 2), "end": round(t + durs[i], 2),
+                   "text": a["text"]}
+            v = anchors[i]
+            if v and v.get("subject"):
+                cue["subject"] = v["subject"]
+                cue["grid"] = [v["x"], v["y"]]
+                cue["confirmed"] = v["score"] >= PERCEIVE_MIN_SCORE
+            cues.append(cue)
+            t += durs[i]
+        _reel_state(job, state="done", pct=100,
+                    video=_tutor_url(final), seconds=round(t, 2), cues=cues)
+    except Exception as e:
+        _reel_state(job, state="error", pct=100,
+                    error=f"{type(e).__name__}: {e}")
+    finally:
+        for c in opened:
+            try:
+                video_mod.close_clip(c)
+            except Exception:
+                pass
+
+
+@app.post("/api/reel")
+def reel_start():
+    """One chapter's actions -> one MPT-edited clip, cut to the descriptions.
+
+    {"actions": [{"text": "Undo the quick link", "footage": "..."}, ...],
+     "lang": "en"} -> {"job": id, "poll": "/api/reel/status?job=id"}
+
+    Ends {"state": "done", "video": same-origin url, "seconds": ...,
+    "cues": [{start, end, text}, ...]} — the cue list is the edit decision
+    list, so the page knows exactly when each action is on screen."""
+    mods, why = _mpt()
+    if not mods:
+        return jsonify({"disabled": True, "why": why})
+    body = request.get_json(silent=True) or {}
+    raw = body.get("actions")
+    if not isinstance(raw, list) or not raw:
+        return jsonify({"error": {"message": "actions required"}}), 400
+    actions = []
+    for a in raw[:MAX_REEL_ACTIONS]:
+        if isinstance(a, str):
+            a = {"text": a}
+        if isinstance(a, dict) and str(a.get("text") or "").strip():
+            actions.append({"text": str(a["text"]).strip()[:300],
+                            "footage": str(a.get("footage") or "")[:120]})
+    if not actions:
+        return jsonify({"error": {"message": "no action had text"}}), 400
+    # "generate" = text-to-video diffusion of each action (Make-A-Video's
+    # premise, one paid generation per shot); "stock" = the Pexels search;
+    # "auto" = generate when a token is configured, stock otherwise, and
+    # stock per-shot whenever a generation fails.
+    source = str(body.get("source") or "auto")
+    if source not in ("auto", "generate", "stock"):
+        return jsonify({"error": {"message": f"unknown source {source}"}}), 400
+    have_stock = True
+    try:
+        mods["material"].get_api_key("pexels_api_keys")
+    except Exception as e:
+        have_stock = False
+        stock_why = next((ln for ln in str(e).splitlines()
+                          if ln.strip()), "no api key").strip()
+    if source == "generate" and not REPLICATE_TOKEN:
+        return jsonify({"disabled": True, "why": "no REPLICATE_API_TOKEN"})
+    if not have_stock and not (REPLICATE_TOKEN and source in ("auto",
+                                                             "generate")):
+        return jsonify({"disabled": True, "why": stock_why})
+    lang = str(body.get("lang") or "en")
+    voice = str(body.get("voice") or MPT_VOICES.get(lang) or MPT_VOICES["en"])
+
+    job = hashlib.sha1(json.dumps([voice, source, actions], sort_keys=True)
+                       .encode("utf-8")).hexdigest()[:16]
+    final = os.path.join(_tutor_dir(), f"reel-{job}", "reel.mp4")
+    state_now = _reel_state(job)
+    if os.path.isfile(final) and state_now.get("state") == "done":
+        return jsonify({"job": job, "cached": True,
+                        "poll": f"/api/reel/status?job={job}"})
+    if state_now.get("state") in ("narrating the actions",
+                                  "generating video of each action",
+                                  "finding footage per action",
+                                  "cutting the shots to the narration",
+                                  "encoding the cut",
+                                  "burning subtitles, muxing the voice"):
+        # the same chapter prefetched twice must not spawn a second ffmpeg
+        return jsonify({"job": job, "poll": f"/api/reel/status?job={job}"})
+    _reel_state(job, state="queued", pct=0, error=None, video=None)
+    threading.Thread(target=_reel_run, daemon=True,
+                     args=(job, actions, voice, source)).start()
+    return jsonify({"job": job, "poll": f"/api/reel/status?job={job}"})
+
+
+@app.get("/api/reel/status")
+def reel_status():
+    job = re.sub(r"[^0-9a-f]", "", request.args.get("job", ""))[:16]
+    if not job:
+        return jsonify({"error": {"message": "job required"}}), 400
+    path = os.path.join(_tutor_dir(), f"reel-{job}", "state.json")
+    if not os.path.isfile(path):
+        return jsonify({"error": {"message": "unknown job"}}), 404
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError) as e:
+        return jsonify({"error": {"message": str(e)}}), 500
 
 
 # ------------------------------------------------- motion / actuated curve
@@ -873,6 +1738,135 @@ def graph_ingest():
     HM.save(GRAPH_PATH)
     return jsonify({"task": tid, "steps": len(doc["steps"]),
                     "physics": flagged, "stats": HM.stats()})
+
+
+# ------------------------------------------------------- teach from a book
+#
+# A how-to book is a finished curriculum: someone already sequenced the
+# skills, wrote the exercises as imperatives and photographed the hand
+# positions. /api/book turns that directly into the lesson — the book
+# replaces the director, not the player. Its exercises become action-reel
+# and hand-rig chapters, its diagrams the rare "anim" chapter, and its
+# procedures are ingested into the hivemind so an interruption is answered
+# from what the BOOK says rather than from the model's memory.
+#
+# The same conversion the Mine button does for a YouTube transcript, done
+# for the older medium.
+
+MAX_BOOK_PAGES = 100
+MAX_BOOK_CHARS = 55_000        # what one structuring call can actually hold
+
+BOOK_SYS = """You convert instructional books into interactive video lessons. You receive the extracted text of a how-to book. Respond with ONLY strict JSON, no markdown fences, shaped:
+{"title": "short course title", "topic": "what is being taught, one phrase",
+ "chapters": [ 6-10 chapters, each one of:
+  {"narration":"1-2 conversational spoken sentences teaching the point","title":"short noun phrase","mode":"actions","seconds":14,"actions":[{"text":"One imperative action STARTING WITH THE VERB, from the book","footage":"2-5 words naming the filmable thing"} , 2-4 actions]}
+  {"narration":"...","title":"...","mode":"hand","seconds":10,"hand_steps":["Imperative finger/hand action from the book", 2-4 of them]}
+  {"narration":"...","title":"...","mode":"skeleton","seconds":10,"motion_steps":["Whole-body imperative", ...]}
+  {"narration":"...","title":"...","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[{"type":"box","x":20,"y":30,"w":12,"h":8,"label":"...","color":"blue","in":"pop"}]}]}
+ ],
+ "howtos": [ 2-6 procedures worth remembering, each {"title":"...","steps":["imperative step", ...]} ]}
+Rules:
+- FOLLOW THE BOOK's own teaching order and use ITS instructions, not your general knowledge. Quote its imperatives nearly verbatim in actions/hand_steps.
+- "hand" chapters for finger technique (grips, fretting, picking). "actions" for physical procedures shown as real film (with concrete filmable footage terms). "skeleton" only for posture/whole-body. "anim" ONLY for genuinely abstract structure (a tuning diagram, a scale chart) — at most 2.
+- Coordinates in anim els: 50x50 grid, x1y1 bottom-left, keep 4-46.
+- "howtos" are the book's procedures as numbered-step recipes so a knowledge graph can answer questions about them later. Steps imperative, one action each.
+- Everything spoken ("narration") is conversational, as a tutor would say it aloud."""
+
+
+def _book_text(data):
+    """PDF bytes -> (text, pages_read). Text-layer only — a scanned book with
+    no text layer comes back empty and is reported as such, not OCR'd."""
+    import io as _io
+    from pypdf import PdfReader
+    rd = PdfReader(_io.BytesIO(data))
+    out, n = [], 0
+    for page in rd.pages[:MAX_BOOK_PAGES]:
+        try:
+            t = page.extract_text() or ""
+        except Exception:
+            t = ""
+        if t.strip():
+            n += 1
+            out.append(f"[page {n}]\n{t.strip()}")
+        if sum(len(x) for x in out) > MAX_BOOK_CHARS:
+            break
+    return "\n\n".join(out)[:MAX_BOOK_CHARS], n
+
+
+@app.post("/api/book")
+def book_lesson():
+    """Upload a PDF book -> a playable lesson grounded in that book.
+
+    multipart/form-data with "file", or a raw application/pdf body.
+    -> {"title", "topic", "chapters": [director-format chapters],
+        "ingested": how many of its procedures now live in the hivemind,
+        "pages": pages read}
+
+    The chapters drop straight into the player; the howtos go into the graph,
+    so pressing Ask mid-lesson retrieves the book's own steps."""
+    if not API_KEY:
+        return jsonify({"disabled": True, "why": "ANTHROPIC_API_KEY not set"})
+    f = request.files.get("file")
+    data = f.read() if f else request.get_data()
+    name = (f.filename if f else "book")[:120]
+    if not data or len(data) < 800:
+        return jsonify({"error": {"message": "no PDF received"}}), 400
+    if len(data) > 40 * 1024 * 1024:
+        return jsonify({"error": {"message": "PDF over 40MB"}}), 400
+    try:
+        text, pages = _book_text(data)
+    except Exception as e:
+        return jsonify({"error": {"message": f"could not read the PDF: {e}"}}), 400
+    if len(text) < 400:
+        return jsonify({"error": {"message":
+            "no readable text — this PDF looks scanned (images only)"}}), 400
+
+    try:
+        r = requests.post(ANTHROPIC_URL, timeout=240, headers={
+            "x-api-key": API_KEY, "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"},
+            json={"model": "claude-sonnet-4-6", "max_tokens": 6000,
+                  "system": BOOK_SYS,
+                  "messages": [{"role": "user", "content":
+                      f"Book file: {name}\n\n{text}"}]})
+        if r.status_code != 200:
+            return jsonify({"error": {"message":
+                f"structuring failed: HTTP {r.status_code}"}}), 502
+        raw = "".join(b.get("text", "") for b in r.json().get("content", [])
+                      if b.get("type") == "text")
+        plan = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+    except Exception as e:
+        return jsonify({"error": {"message": f"structuring failed: {e}"}}), 502
+
+    chapters = [c for c in (plan.get("chapters") or [])
+                if isinstance(c, dict) and c.get("narration")][:12]
+    if not chapters:
+        return jsonify({"error": {"message":
+            "the book yielded no teachable chapters"}}), 502
+
+    # the book's procedures become graph knowledge, so interrupts answer
+    # from the book — with its title as the cited source
+    ingested = 0
+    for h in (plan.get("howtos") or [])[:8]:
+        try:
+            steps = [str(s).strip() for s in (h.get("steps") or []) if str(s).strip()]
+            if len(steps) < 2:
+                continue
+            body = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
+            doc = parse_plain_howto(str(h.get("title") or "untitled")[:120],
+                                    body, source=f"book: {name}")
+            if doc["steps"]:
+                HM.ingest(doc)
+                ingested += 1
+        except Exception:
+            continue
+    if ingested:
+        HM.save(GRAPH_PATH)
+
+    return jsonify({"title": str(plan.get("title") or name)[:160],
+                    "topic": str(plan.get("topic") or "")[:200],
+                    "chapters": chapters, "ingested": ingested,
+                    "pages": pages})
 
 
 @app.post("/api/track")

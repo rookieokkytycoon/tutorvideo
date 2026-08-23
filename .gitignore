@@ -25,3 +25,8 @@ models/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# MoneyPrinterTurbo working files: generated narration, downloaded stock
+# clips and rendered MP4s. All re-creatable, and the renders are large.
+mpt/storage/
+mpt/config.toml

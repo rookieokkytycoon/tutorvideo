@@ -6,3 +6,21 @@ gunicorn>=21.0
 # when this is missing, so mining still works without it — but this path is
 # far more reliable and survives YouTube's page changes.
 youtube-transcript-api>=0.6
+
+# --- MoneyPrinterTurbo (mpt/) -------------------------------------------
+# Optional, and deliberately not pinned here: mpt/ ships its own pinned
+# requirements.txt and this app must still boot without any of it — every
+# /api/tts, /api/stock and /api/render route answers {"disabled": true}
+# instead of failing when the import does not resolve.
+#
+#     pip install -r mpt/requirements.txt
+#
+# The three tiers need different things, so a partial install is useful:
+#   narration (/api/tts)     edge_tts        — free, no API key
+#   stock footage (/api/stock) requests only — needs a pexels key in
+#                              mpt/config.toml
+#   MP4 export (/api/render) moviepy + an ffmpeg binary. moviepy pulls in
+#                            imageio-ffmpeg, which bundles one, so ffmpeg
+#                            does NOT have to be on PATH.
+# edge_tts>=7.2
+# moviepy>=2.1

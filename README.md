@@ -8,6 +8,8 @@ and hosts the how-to knowledge graph ("hivemind") the tutor answers from.
       hivemind.py       knowledge graph: ingest, cross-link, retrieve, persist
       coach.py          the return path: your camera scored against the rig
       index.html        the full app (player, interrupts, agentic chapters, recording)
+      mpt/              MoneyPrinterTurbo, vendored and imported as a library:
+                        the neural voice, stock step footage and the MP4 export
       requirements.txt  flask, requests, networkx, gunicorn
 
 ## Hivemind endpoints
@@ -75,14 +77,84 @@ Every lesson ≈ 1 director call + 1 sketch call per chapter (3-4);
 every interruption ≈ 1 more call; an agentic new chapter ≈ 2.
 All on your key. Pricing: https://docs.claude.com/en/api/overview
 
-## Extend with Python-only powers (next steps)
+## MoneyPrinterTurbo: the voice, the footage and the file  (`mpt/`)
 
-Because the backend is Python, you can now add what the browser can't do:
-- /api/tts -> real TTS (Coqui XTTS, ElevenLabs) returning audio the page
-  plays via <audio>, replacing robotic speechSynthesis
-- /api/render -> reuse sketch_tutorial_pipeline.py server-side to export
-  narrated MP4s (browser recording is silent; the server isn't)
-- AVI-style indexing of finished lessons for deeper question answering
+Two of this README's own "next steps" are now done, and neither is a new
+service to deploy: MoneyPrinterTurbo is vendored whole in `mpt/` and imported
+as a **library**. Nothing else runs — no FastAPI, no Streamlit, no second port.
+
+    POST /api/tts      {"text": "...", "lang": "en"|"id"}
+      -> {"audio": "/api/mpt/media?f=...", "seconds": 2.45,
+          "cues": [{"t": 0.1, "d": 0.25, "w": "Grip"}, ...]}
+
+    POST /api/stock    {"terms": ["seat the chain", ...], "seconds": 5}
+      -> {"videos": [url|null, ...], "errors": [...], "source": "pexels"}
+
+    POST /api/render   {"topic": "...", "chapters": [{"narration": "..."}, ...]}
+      -> {"job": "<id>", "poll": "/api/render/status?job=<id>"}
+
+**The voice is the one free thing in this app.** Every other generated asset
+here bills someone — Claude per lesson, Replicate per clip. edge-tts needs no
+API key at all, so narration costs nothing and the page prefers it, keeping
+`speechSynthesis` only as the fallback. That matters most in Bahasa: a machine
+with no `id-ID` voice installed narrates an Indonesian lesson in an American
+accent and says nothing about it. `id-ID-GadisNeural` is always there.
+
+**The cues are why `/api/tts` returns JSON instead of just audio.** The
+avatar's mouth is driven by word boundaries, which `speechSynthesis` emits and
+a plain `<audio>` element does not. Without them the mouth would flap on an
+average while a real voice said something else; with them the lipsync is
+tighter than the browser's ever was, because the timings come from the
+synthesiser rather than from a word count.
+
+**Stock footage is the cheap sibling of `/api/videos`.** Diffusion *invents*
+footage of the step and bills per clip; a stock search finds footage that was
+really filmed, in seconds rather than 30-90s, for nothing. Both answer the
+same `{"videos": [url|null, ...]}`, so a `world` chapter's `step_videos`
+machinery does not care which one filled the screen — a miss comes back null,
+that step's screen goes quiet, and the lesson carries on. Stock is preferred
+when it is configured; an explicit `"step_videos": ["cinematic sentence", ...]`
+is a *diffusion* instruction, so that stays on diffusion.
+
+**The export is the thing the browser genuinely cannot do.** `Record` captures
+the board with `canvas.captureStream()`, which carries pixels and no audio —
+the file it makes is a mute animation of a lesson that was mostly talking.
+`Export MP4` renders server-side instead: the same narration in the same
+neural voice, real footage cut under it, subtitles burned in, muxed by ffmpeg.
+It is minutes rather than seconds, so it returns a job id and the button
+polls; the render state lives in a file, not in memory, because gunicorn runs
+two workers and a poll lands on whichever one is free.
+
+### Setup
+
+    pip install -r mpt/requirements.txt
+
+Narration works immediately after that — no key, no config. Stock footage and
+the export additionally need a free Pexels key in `mpt/config.toml`:
+
+    pexels_api_keys = ["your-key"]        # https://www.pexels.com/api/
+
+ffmpeg does **not** need to be on PATH: moviepy pulls in `imageio-ffmpeg`,
+which ships a binary, and `mpt/` resolves that automatically.
+
+### It degrades in three independent pieces
+
+The tiers fail separately and are reported separately, so a box that can
+narrate but not export says exactly that instead of hiding all three:
+
+    GET /health -> {"mpt": {"ok": true, "tts": true,
+                            "stock": false, "stock_why": "...no api key...",
+                            "render": true, "voices": {...}}}
+
+With `mpt/` absent entirely, every route answers `{"disabled": true, "why":
+...}` — the same contract `/api/video` uses without `REPLICATE_API_TOKEN` —
+and the page falls back rather than erroring. The board still runs with no
+keys of any kind, which is still the point.
+
+Overrides: `MPT_VOICE_EN`, `MPT_VOICE_ID`.
+
+Still open: AVI-style indexing of finished lessons for deeper question
+answering.
 
 ## One 3D room: `mode:"world"`  (LineFORM's third affordance)
 

@@ -206,6 +206,8 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
       <button class="big ghost" id="demo">Demo</button>
       <button class="big ghost" id="voice" aria-pressed="true">Voice on</button>
       <button class="big ghost" id="lang" aria-pressed="false" title="Bahasa pelajaran / lesson language">EN</button>
+      <button class="big ghost" id="capstyle" aria-pressed="true"
+              title="Flip between MoneyPrinterTurbo's look — its bold outlined subtitle in its own font, entering on its transitions — and the board's own hand-drawn caption. Switches live, mid-lesson, so the two can be compared on the same chapter.">Look: MPT</button>
     </div>
     <div class="row">
       <button class="big ghost" id="howdraw">How I animate</button>
@@ -225,6 +227,12 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
               title="Turn on your camera. The rig performs the movement, MediaPipe tracks you, and the two are compared joint by joint — in your browser, nothing is uploaded.">Coach me</button>
       <button class="big ghost" id="mirrorBtn" aria-pressed="true"
               title="You are facing the demonstration, so copying it with the opposite arm is the natural thing to do. Mirror accepts that; turn it off to be graded on the same side the rig uses.">Mirror: on</button>
+    </div>
+    <label>Teach from a book — upload a PDF and it becomes the lesson</label>
+    <div class="row">
+      <input id="bookfile" type="file" accept=".pdf,application/pdf" style="display:none">
+      <button class="big ghost" id="bookBtn"
+              title="The book replaces the director: its exercises become hand-rig and action-reel chapters in its own teaching order, and its procedures go into the hivemind so interrupting mid-lesson gets answered from what the book actually says.">Upload a book</button>
     </div>
     <label for="tube">Mine a how-to — YouTube URL, wikiHow URL, or a topic</label>
     <div class="row">
@@ -257,14 +265,63 @@ window.onerror=(msg,src,line)=>{
 let voiceOn=true, scenes=[], topicNow="", qaHistory=[];
 let videoEnabled=false, imageEnabled=false, recorder=null;
 let trackEnabled=false, trackWhy="";
+/* MoneyPrinterTurbo tiers, reported separately because they fail separately:
+   narration needs only edge-tts (free, keyless), stock footage needs a Pexels
+   key, and the MP4 export needs moviepy and an ffmpeg binary. A box that can
+   narrate but not export should say so rather than hide all three. */
+let ttsEnabled=false, footageEnabled=false, footageWhy="";
+/* MoneyPrinterTurbo's GRAPHICS, not just its assets. Its renderer has a very
+   particular caption look — a bold face from its own resource/fonts, white
+   fill, black outline, centred at the bottom of the frame — and its own set
+   of transitions between clips. Adopting both means a chapter on this board
+   and a short rendered by its pipeline put the same words in the same place
+   in the same face, instead of the board having a private house style that
+   happens to sit on top of its footage. */
+let mptGraphics=false, MPTSUB=null, mptFontFamily="";
+/* Which of the two looks is on. They stay mutually exclusive on purpose —
+   drawn together they would be two sets of words competing for the same
+   corner — but the switch is live, so the same chapter can be seen both ways
+   without restarting the lesson. "Look" covers the caption AND the
+   transition, because those are the two halves of one house style. */
+let capStyle="mpt";
+const mptLook=()=>mptGraphics&&!!MPTSUB&&capStyle==="mpt";
 fetch("/health").then(r=>r.json()).then(d=>{
   videoEnabled=!!d.video; imageEnabled=!!d.image;
   trackEnabled=!!d.track; trackWhy=d.track_why||"";
+  /* mpt_status(): {ok, why} first, then per-tier. They fail separately —
+     narration needs only edge-tts, stock footage needs a provider key, the
+     export needs moviepy and ffmpeg — so each is read on its own. */
+  const m=d.mpt||{};
+  ttsEnabled=m.ok===true&&m.tts===true;
+  footageEnabled=m.ok===true&&m.stock===true;
+  footageWhy=m.ok!==true?String(m.why||"unavailable"):(m.stock_why||"");
   const bits=[];
   if(videoEnabled)bits.push("video "+(d.video_model||""));
   if(imageEnabled)bits.push("stills "+(d.image_model||""));
   if(trackEnabled)bits.push("pose tracking ready");
-  if(bits.length)$('sceneMeta').textContent="Diffusion ready — "+bits.join(" · ");
+  if(ttsEnabled)bits.push("voice "+((m.voices||{})[lessonLang]||"neural"));
+  if(footageEnabled)bits.push("stock footage");
+  /* the caption look travels with the fonts, so both arrive together or
+     neither does — a style that renders in a substitute face is worse than
+     the board's own hand-drawn one */
+  if(m.graphics===true&&m.subtitle){
+    MPTSUB=m.subtitle;
+    /* .ttc collections are CJK and browsers cannot load them at all, so the
+       pick is the first Latin-capable face, preferring the configured one */
+    const fonts=(m.fonts||[]).filter(f=>f.latin);
+    const want=fonts.find(f=>f.file===m.subtitle.font)||fonts[0];
+    if(want){
+      const fam="MPT "+want.name;
+      new FontFace(fam,`url("/api/mpt/font?f=${encodeURIComponent(want.file)}")`)
+        .load().then(ff=>{document.fonts.add(ff);
+                          mptFontFamily=fam; mptGraphics=true;
+                          bits.push("MPT captions");
+                          $('sceneMeta').textContent="Ready — "+bits.join(" · ");
+                          capStyleLabel();})   /* the toggle is real now */
+        .catch(()=>capStyleLabel());  /* font failed: board's own hand only */
+    }
+  }
+  if(bits.length)$('sceneMeta').textContent="Ready — "+bits.join(" · ");
   const b=$('track');
   if(b&&!trackEnabled){b.disabled=true;b.textContent="Track: n/a";
     b.title="Real tracking needs mediapipe, opencv-python and yt-dlp on the server"
@@ -272,7 +329,14 @@ fetch("/health").then(r=>r.json()).then(d=>{
 }).catch(()=>{});
 let captionText="", captionQA=false, speaking=false;
 
-const MEDIA=u=>"/api/media?u="+encodeURIComponent(u);
+/* Replicate's CDN has to be proxied to stay same-origin — a cross-origin
+   frame taints the canvas and a tainted canvas cannot be captureStream()'d,
+   which would kill Record. MoneyPrinterTurbo's clips are ALREADY served from
+   this origin by /api/mpt/media, so sending them through the proxy again
+   would only get them rejected as a disallowed host. Anything starting with
+   "/" is ours already and is passed straight through. */
+const MEDIA=u=>String(u).startsWith("/")?u
+              :"/api/media?u="+encodeURIComponent(u);
 const reducedMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ============ coordinate mapping (grid y is bottom-up) ============ */
@@ -338,7 +402,9 @@ Build up a picture across beats — later beats add to what earlier beats put on
 const DIRECTOR_SYS=`You are the director of short animated tutorial videos. Given a topic, plan 3-4 chapters. Respond with ONLY a JSON array, no markdown fences.
 Output STRICT JSON: every key and string double-quoted, no comments, no trailing commas, and never write "..." or an ellipsis as a placeholder — write the real content or leave the key out.
 Shape of one chapter:
-[{"narration":"1-2 conversational sentences, spoken aloud","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"what this beat shows","els":[{"type":"box","x":20,"y":30,"w":12,"h":8,"label":"pump","color":"blue","in":"pop"},{"type":"arrow","from":[27,30],"to":[36,30],"label":"flow","color":"red","in":"grow","motion":"flow"}]}]}]
+[{"narration":"1-2 conversational sentences, spoken aloud","title":"short noun phrase","mode":"actions","seconds":14,"actions":[{"text":"Drain the coolant into a pan","footage":"car radiator draining coolant"},{"text":"Unclip the upper hose","footage":"hands removing radiator hose clamp"}]}]
+A chapter of abstract structure instead uses the shape mode, which is the OLD default and should now be rare:
+[{"narration":"...","title":"short noun phrase","mode":"anim","seconds":10,"footage":"water pump impeller","steps":[{"beat":"what this beat shows","els":[{"type":"box","x":20,"y":30,"w":12,"h":8,"label":"pump","color":"blue","in":"pop"},{"type":"arrow","from":[27,30],"to":[36,30],"label":"flow","color":"red","in":"grow","motion":"flow"}]}]}]
 ${ANIM_LANG}
 Four other modes exist for when a diagram is the wrong tool:
 - "hand": a close-up 3D hand — 21 tracked landmarks, five finger chains — demonstrating the actual hand movements of a repair, with the gesture named and the finger curl read out live. Set "hand_steps" to 2-5 SHORT imperative actions that START WITH THE VERB ("Pinch the tab and peel it back", "Grip the cap and twist counter-clockwise", "Press the tab until it clicks"), and omit "steps". THIS IS THE BEST MODE FOR SHOWING SOMEONE HOW TO FIX SOMETHING — hands are what actually do a repair, and the student can ask about the grip and get an answer about the grip.
@@ -348,7 +414,10 @@ Four other modes exist for when a diagram is the wrong tool:
 - "world": ONE 3D room instead of panes — the strongest mode when WHERE things are is part of the lesson. Set "actors" to 1-3 of {"kind":"skeleton","steps":[...]}, {"kind":"hand","steps":[...]}, {"kind":"lineform","shapes":[...]}, each optionally with "title". They stand in one space at real scale, so they occlude each other; a hand and a body are automatically the SAME person's hand. Add "wrap":true to a lineform actor and the servo chain bandages itself around the moving forearm — that is the paper's constraint, and it cannot be shown in a pane. Add "video_prompt" and the diffusion footage plays on a screen hanging in the room instead of behind everything. Better still, set "step_videos":true and EVERY step gets its own generated clip, cut onto that screen exactly when the rig performs it — real footage of the pinch playing behind the servo chain doing the pinch. Only do that when seeing the real thing matters, because it is one paid generation per step (max 4); you may instead write the prompts yourself as "step_videos":["one dense cinematic sentence for step 1", "...step 2"]. The camera moves on its own shot list, cutting close for finger work and wide for whole-body work, and the student can drag it. Example: {"mode":"world","seconds":15,"actors":[{"kind":"skeleton","title":"posture","steps":["Brace the wheel against your knee"]},{"kind":"hand","title":"grip","steps":["Pinch the chain onto the teeth"]},{"kind":"lineform","title":"target shape","shapes":["curve","wristband"],"wrap":true}]}
 - "photo": a diffusion-generated still photograph as the backdrop. Set "image_prompt" to a dense photographic description (subject, setting, lighting, no text in frame) and omit "steps". Use it for a real object, place or specimen the student should SEE.
 - "hybrid": diffusion-generated film footage as the backdrop. Set "video_prompt" to 1-2 dense cinematic sentences naming the subject, its MOTION and the camera move, one continuous shot. Use it only when the motion is the point.
-Prefer "anim" — it is instant and free. "skeleton", "compose" and "world" are also instant and free (a world chapter only costs money if you give it a "video_prompt"), so reach for them freely whenever a human action is being taught; use "world" for at least one chapter when the lesson involves a body, a tool and a part that have to be in the right places relative to each other. Use photo/hybrid for at most one chapter.`;
+- "actions": THE DEFAULT AND THE ONE YOU SHOULD REACH FOR FIRST. The chapter is a list of real ACTIONS, and each action is shown as its own piece of REAL FILM, cut on the action's own boundary. Set "actions" to 2-5 objects: {"text":"Undo the quick link with pliers","footage":"bicycle chain quick link pliers"}. "text" is one short imperative instruction STARTING WITH THE VERB — it is spoken and captioned. "footage" is 2-5 words naming the filmable object or movement for that ONE action; omit it and the action text is searched instead. The clips cut in sequence, each action getting a slice of the chapter proportional to how long its instruction takes to say, and the tutor's marker strokes are drawn ON TOP of the film. This is how you show someone HOW TO DO SOMETHING: they watch the real movement, in order, annotated. Example: {"mode":"actions","seconds":16,"actions":[{"text":"Shift to the smallest sprocket","footage":"bicycle rear derailleur shifting"},{"text":"Undo the quick link","footage":"bicycle chain quick link"},{"text":"Thread the new chain through the derailleur cage","footage":"threading bicycle chain derailleur"}]}
+Do NOT use "anim" for a physical action. A box labelled "chain" sliding next to a box labelled "sprocket" is a diagram OF an action, not the action, and nobody has ever learned a movement from it. "anim" now exists only for genuinely abstract structure that was never filmed — a data flow, a hierarchy, a before/after comparison of quantities — and should be at most ONE chapter of a lesson, if any.
+EVERY chapter, in ANY mode, may also carry "footage": 2-5 words naming REAL FILM to play behind the explanation — the concrete, filmable noun, not the idea. Write "bicycle chain sprocket", not "how gears transmit force". This is a stock-library search, so it finds a real object being handled by real hands, in seconds and at no cost, and the diagram, the rig and the tutor's marker strokes are all drawn ON TOP of it. Use it on most chapters: seeing the actual part while the animation explains it is the whole point. Set "footage": false on a chapter that is pure abstraction and would only be muddied by film. This is NOT "video_prompt" — video_prompt is a paid diffusion generation and describes a shot; "footage" is two or three nouns.
+Prefer "actions" — real film of the real movement, cut action by action, is the strongest explanation this board can give and it costs nothing. "skeleton", "compose" and "world" are also instant and free (a world chapter only costs money if you give it a "video_prompt"), so reach for them freely whenever a human action is being taught; use "world" for at least one chapter when the lesson involves a body, a tool and a part that have to be in the right places relative to each other. Use photo/hybrid for at most one chapter.`;
 
 const SKETCH_SYS=`You are an expert annotator. You do NOT draw the subject — it is already on screen. You add a few marker strokes ON TOP of it: circles around a part, arrows pointing at it, underlines. ${STROKE_LANG}
 Scale matters — a mark smaller than 4 grid units is invisible, so:
@@ -367,12 +436,16 @@ Then OPTIONALLY exactly one of:
 <strokes>1-3 annotation strokes placed ON the existing animation — a circle around a part, an arrow at it, an underline, at the parts' grid locations. Same stroke format with <id> labels.</strokes>
 <new_scene>{"narration":"1-2 spoken sentences","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[ ... ]}]}</new_scene>
 Use <new_scene> when the question deserves its OWN animation (a different mechanism, a "show me X" request); it becomes the next chapter.
-A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements. Use that whenever the student asks how to physically DO something: "show me", "how do I hold it", "what grip", "show me your hands". Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action. Both are instant and free, so prefer them over a diagram any time the answer is a movement rather than a fact.
+THE PREFERRED new_scene whenever the student asks how to physically DO something — "show me", "how do I", "what grip", "walk me through it" — is {"mode":"actions","actions":[{"text":"Grip the cap and twist counter-clockwise","footage":"hand twisting bottle cap"}, ...]}: 2-4 short imperative actions, each with 2-5 words of "footage" naming the filmable thing. That chapter plays REAL FILM of each action cut to its narration, with the tracked hand or body rig performing the same movement over the film and your marker strokes on top — the fully physical explanation, and the strongest one this board has.
+A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements, with no film behind it. Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action. All of these are fast, so prefer them over a diagram any time the answer is a movement rather than a fact.
 When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in one 3D room at real scale instead of side by side, which is the better answer when the question is about where things are relative to each other.
 If the board is already a 3D room, you may ALSO answer by moving the camera:
 <camera>{"target":"grip index tip","dist":0.8,"seconds":1.4,"label":"close on the grip"}</camera>
 "target" is one of the anchor names listed on the board above (or [x,y,z]); "shot" may instead name one of the director's own shots (wide, medium, close, side, screen, curve); "dist" is metres from the target; "yaw" and "pitch" are radians. Use it whenever the question is really about a vantage point — "show me from the side", "get closer", "what is behind it", "can I see the screen" — because in a room that question has a real answer. A camera move can accompany <answer> and <strokes>; annotations stay stuck to what they were pointing at while the camera moves.
 ${ANIM_LANG}
+You may ALSO answer by putting REAL FILM on the board and marking it up:
+<footage>bicycle chain sprocket</footage>
+2-5 words naming a filmable object or action — a stock-library search, not a shot description. The clip replaces the backdrop and YOUR STROKES ARE DRAWN ON TOP OF IT, so the honest answer to "what does that actually look like" or "show me the real thing" is film with a circle around the part in question. Use it together with <answer> and <strokes>: the footage shows it, the strokes point at it, the words explain it. It costs nothing and arrives in seconds. Do not use it for an abstraction that was never filmed.
 Use <strokes> to point at what is already on screen. Omit both if words alone answer it. Never leave the grid.`;
 
 /* ============ lesson language ============
@@ -501,6 +574,49 @@ function repairJSON(t){
     ).join('')
      .replace(/[“”]/g,'"').replace(/[‘’]/g,"'");
 }
+function repairBrackets(t){
+  /* The regex repairs cannot fix a MISMATCHED bracket — the director writing
+     "y": 46] where the ] belongs to nothing, which took down a whole lesson.
+     This walks the text with a real bracket stack (strings skipped, so a "]"
+     inside a label is left alone) and, at each closer that disagrees with
+     the stack, decides between the two ways a model makes this mistake:
+     - the closer is NOISE and the object/array continues ("y": 46], "r": 3
+       — the next token is a key, so the ] is simply deleted), or
+     - the closer is the WRONG CHARACTER for a real close ({"a": 1], {"b"...
+       — the next element starts, so ] becomes }).
+     Anything still open at the end is closed, which also rescues a director
+     reply that was truncated between elements. */
+  const n=t.length, stack=[]; let out='', i=0;
+  const skipStr=j=>{j++;
+    while(j<n){if(t[j]==='\\')j+=2;else if(t[j]==='"')return j+1;else j++;}
+    return n;};
+  const tok=j=>{while(j<n&&/\s/.test(t[j]))j++;return j;};
+  while(i<n){
+    const c=t[i];
+    if(c==='"'){const e=skipStr(i);out+=t.slice(i,e);i=e;continue;}
+    if(c==='{'||c==='['){stack.push(c);out+=c;i++;continue;}
+    if(c==='}'||c===']'){
+      const want=c==='}'?'{':'[';
+      if(stack.length&&stack[stack.length-1]===want){stack.pop();out+=c;i++;continue;}
+      if(!stack.length){i++;continue;}          /* closer with nothing open */
+      const top=stack[stack.length-1];
+      const j=tok(i+1);
+      if(t[j]===','){
+        const k=tok(j+1);
+        if(t[k]==='"'){
+          const m=tok(skipStr(k));
+          if(top==='{'&&t[m]===':'){i++;continue;}   /* a key follows: noise */
+          if(top==='['&&t[m]!==':'){i++;continue;}   /* an element follows */
+        }else if(top==='['&&t[k]!==undefined){i++;continue;}
+      }
+      stack.pop();out+=(top==='{'?'}':']');i++;      /* meant the other one */
+      continue;
+    }
+    out+=c;i++;
+  }
+  while(stack.length)out+=(stack.pop()==='{'?'}':']');
+  return out;
+}
 function parseModelJSON(raw,what){
   const t=jsonSlice(raw);
   try{return JSON.parse(t);}catch(e1){
@@ -510,10 +626,16 @@ function parseModelJSON(raw,what){
       chatMsg('sys','&#9888; '+what+' JSON needed repair (trailing comma or bare key)');
       return v;
     }catch(e2){
-      const m=/position (\d+)/.exec(e2.message);
-      const p=m?+m[1]:0;
-      const near=t.slice(Math.max(0,p-80),p+80).replace(/\s+/g,' ');
-      throw new Error(e2.message+'  |  near: …'+near+'…');
+      try{
+        const v=JSON.parse(repairBrackets(repairJSON(t)));
+        chatMsg('sys','&#9888; '+what+' JSON needed repair (mismatched bracket)');
+        return v;
+      }catch(e3){
+        const m=/position (\d+)/.exec(e2.message);
+        const p=m?+m[1]:0;
+        const near=t.slice(Math.max(0,p-80),p+80).replace(/\s+/g,' ');
+        throw new Error(e2.message+'  |  near: …'+near+'…');
+      }
     }
   }
 }
@@ -1393,6 +1515,15 @@ function drawCover(src,vw,vh,zoom){
   ctx.drawImage(src,(cv.width-w)/2,(cv.height-h)/2,w,h);
 }
 function drawMediaFrame(){
+  /* An ACTION REEL cuts full frame, one clip per action, on the action's own
+     boundaries — MoneyPrinterTurbo's composition model rather than a single
+     backdrop held for the whole chapter. Until now the reel only ever painted
+     the screen prop inside a room; here it IS the picture. */
+  if(REEL.cues.length){
+    const r=reelAt(player.elapsed/1000);
+    if(r&&r.el){drawCover(r.el,r.el.videoWidth||16,r.el.videoHeight||9,1);
+                return true;}
+  }
   const v=player.videoEl;
   if(v&&v.readyState>=2){drawCover(v,v.videoWidth||16,v.videoHeight||9,1);return true;}
   const im=player.imgEl;
@@ -1404,19 +1535,100 @@ function drawMediaFrame(){
   }
   return false;
 }
-function drawCaption(){
-  if(!captionText)return;
-  if(player.videoEl||player.imgEl){ctx.fillStyle="rgba(253,253,248,.85)";
-    ctx.fillRect(0,cv.height-CAP_H,cv.width-130,CAP_H);}
-  ctx.font='22px "Caveat", cursive';
-  ctx.fillStyle=captionQA?"#C93A2E":"#141412";
-  ctx.textAlign="left";ctx.textBaseline="alphabetic";
-  const maxW=cv.width-160, words=captionText.split(/\s+/), lines=[];let cur="";
+function wrapCaption(maxW){
+  /* MoneyPrinterTurbo wraps by measured width, not by character count
+     (video.py wrap_text), which is the only way that works once the face is
+     proportional and the language is not English. */
+  const words=captionText.split(/\s+/), lines=[]; let cur="";
   for(const w of words){
     const t=cur?cur+" "+w:w;
     if(ctx.measureText(t).width>maxW&&cur){lines.push(cur);cur=w;}else cur=t;
   }
   if(cur)lines.push(cur);
+  return lines;
+}
+function drawCaptionMPT(){
+  /* MoneyPrinterTurbo's subtitle graphic, to its renderer's own numbers:
+     font_size 60 on a 1080-high frame, white fill, black outline of
+     stroke_width, centred, sat at subtitle_position. Everything is scaled off
+     canvas height so the board matches the proportions rather than the pixels
+     of a 1920x1080 render. */
+  const S=MPTSUB, k=cv.height/1080;
+  const size=Math.max(15,Math.round((S.size||60)*k));
+  ctx.font=`${size}px "${mptFontFamily}", system-ui, sans-serif`;
+  ctx.textAlign="center"; ctx.textBaseline="alphabetic";
+  const lines=wrapCaption(cv.width*0.86).slice(-3);
+  if(!lines.length)return;
+  const lh=Math.round(size*1.25), block=lh*lines.length;
+  const pos=String(S.position||"bottom");
+  /* its four positions, custom being a percentage down the frame */
+  let top=pos==="top"?cv.height*0.06
+         :pos==="center"?(cv.height-block)/2
+         :pos==="custom"?cv.height*((S.custom_position||70)/100)-block/2
+         :cv.height-block-Math.round(cv.height*0.06);
+  top=Math.max(4,Math.min(top,cv.height-block-4));
+  if(S.background){
+    /* the optional rounded plate — _rounded_subtitle_background_clip */
+    const w=Math.min(cv.width*0.92,
+              Math.max(...lines.map(l=>ctx.measureText(l).width))+size*0.9);
+    const x=(cv.width-w)/2, y=top-size*0.28, h=block+size*0.5;
+    const r=Math.round((S.background_radius||16)*k);
+    const bg=S.background_color||"#000000";
+    const a=Math.max(0,Math.min(255,S.background_alpha==null?140:S.background_alpha))/255;
+    ctx.fillStyle=`rgba(${parseInt(bg.slice(1,3),16)},${parseInt(bg.slice(3,5),16)},`
+                 +`${parseInt(bg.slice(5,7),16)},${a})`;
+    ctx.beginPath();
+    if(ctx.roundRect)ctx.roundRect(x,y,w,h,r); else ctx.rect(x,y,w,h);
+    ctx.fill();
+  }
+  /* outline then fill, the order PIL strokes text in — a stroke painted after
+     the fill would eat into the glyph instead of ringing it */
+  ctx.lineJoin="round"; ctx.miterLimit=2;
+  /* PIL's stroke_width is an outline RADIUS at font_size 60; canvas lineWidth
+     is the full width, so it is twice that, scaled with the face. */
+  ctx.lineWidth=Math.max(1,(S.stroke_width==null?1.5:S.stroke_width)*2*(size/60));
+  ctx.strokeStyle=S.stroke||"#000000";
+  /* an interrupt answer is the one thing allowed to break the palette — the
+     board has always coloured the tutor's live reply differently */
+  ctx.fillStyle=captionQA?"#FF5A4A":(S.fore||"#FFFFFF");
+  lines.forEach((ln,i)=>{
+    const y=top+lh*(i+1)-Math.round(size*0.28);
+    ctx.strokeText(ln,cv.width/2,y);
+    ctx.fillText(ln,cv.width/2,y);
+  });
+}
+function drawActionLabel(){
+  /* Which action is on film right now, named in the corner. The narration is
+     what is SPOKEN and therefore what the subtitle carries, so the action
+     cannot go there without the words drifting out of sync with the voice —
+     it gets its own line instead, the way a step number would. */
+  const cue=REEL.cur;
+  if(!cue||!cue.text||captionQA)return;
+  const k=cv.height/1080, size=Math.max(13,Math.round(34*k));
+  const i=REEL.cues.indexOf(cue)+1, txt=(i>0?i+". ":"")+cue.text;
+  ctx.font=mptLook()?`${size}px "${mptFontFamily}", system-ui, sans-serif`
+                    :`${Math.round(size*1.15)}px "Caveat", cursive`;
+  ctx.textAlign="left"; ctx.textBaseline="top";
+  const pad=Math.round(size*0.45), w=ctx.measureText(txt).width;
+  ctx.fillStyle="rgba(20,20,18,.55)";
+  ctx.beginPath();
+  const x=pad, y=pad, bw=w+pad*2, bh=size+pad*1.2, r=Math.round(size*0.3);
+  if(ctx.roundRect)ctx.roundRect(x,y,bw,bh,r); else ctx.rect(x,y,bw,bh);
+  ctx.fill();
+  ctx.fillStyle="#FDFDF8";
+  ctx.fillText(txt,x+pad,y+pad*0.55);
+}
+function drawCaption(){
+  drawActionLabel();
+  if(!captionText)return;
+  if(mptLook()){drawCaptionMPT();return;}
+  /* the board's own hand, still here for a server with no MoneyPrinterTurbo */
+  if(player.videoEl||player.imgEl){ctx.fillStyle="rgba(253,253,248,.85)";
+    ctx.fillRect(0,cv.height-CAP_H,cv.width-130,CAP_H);}
+  ctx.font='22px "Caveat", cursive';
+  ctx.fillStyle=captionQA?"#C93A2E":"#141412";
+  ctx.textAlign="left";ctx.textBaseline="alphabetic";
+  const lines=wrapCaption(cv.width-160);
   lines.slice(-2).forEach((ln,i)=>ctx.fillText(ln,16,cv.height-CAP_H+26+i*26));
 }
 function drawAvatar(now){
@@ -1449,6 +1661,46 @@ function renderBeats(){
     el.className='beat'+(i===cur?' on':i<cur?' past':'');
   });
 }
+/* ============ MoneyPrinterTurbo transitions ============
+   app/services/utils/video_effects.py moves between clips with one of six
+   effects instead of a hard cut. The board cuts between chapters, so the same
+   six are available here and mean the same thing.
+
+   Applied to the PICTURE only. Its renderer overlays subtitles after the
+   transition has been composited, so the words do not slide or fade with the
+   footage — and neither do they here, which is also why a caption stays
+   readable across a cut. */
+const MPT_TRANS_MS=520;
+const MPT_TRANS_IN=["FadeIn","SlideIn","ZoomIn","FadeOut","SlideOut","ZoomOut"];
+let MPTTRANS={mode:"FadeIn",t0:-1e9};
+function mptTransStart(){
+  if(!mptLook())return;
+  let m=MPTSUB&&MPTSUB.transition||"FadeIn";
+  if(m==="Shuffle")m=MPT_TRANS_IN[Math.floor(Math.random()*MPT_TRANS_IN.length)];
+  MPTTRANS={mode:m,t0:performance.now()};
+}
+function mptTransBegin(now){
+  /* -> true when a transform was pushed and the caller must restore() */
+  if(!mptLook()||MPTTRANS.mode==="None")return false;
+  const p=(now-MPTTRANS.t0)/MPT_TRANS_MS;
+  if(p<0||p>=1)return false;
+  const e=p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;          /* easeInOutQuad */
+  const m=MPTTRANS.mode;
+  ctx.save();
+  ctx.globalAlpha=e;                    /* every one of them fades in as well */
+  if(m==="SlideIn"||m==="SlideOut"){
+    /* slidein_transition translates the incoming clip in from one edge */
+    const dx=(m==="SlideIn"?-1:1)*cv.width*(1-e)*0.35;
+    ctx.translate(dx,0);
+  }else if(m==="ZoomIn"||m==="ZoomOut"){
+    /* zoomin starts large and settles; zoomout starts small and grows */
+    const s=m==="ZoomIn"?1+0.14*(1-e):1-0.12*(1-e);
+    ctx.translate(cv.width/2,cv.height/2);
+    ctx.scale(s,s);
+    ctx.translate(-cv.width/2,-cv.height/2);
+  }
+  return true;
+}
 function render(now){
   clearBoard();
   /* Coaching owns the whole board: the rig on one side, the student's camera
@@ -1460,11 +1712,13 @@ function render(now){
   /* In a room the generated clip is a surface inside the scene, not a
      backdrop behind it, so the full-frame draw is skipped and drawScreen
      paints the same <video> element onto the quad instead. */
+  const _tr=mptTransBegin(now);
   const onMedia=worldOn()?false:drawMediaFrame();
   if(player.clip){
     /* clips are shorter than the chapter as often as not, so hold the last
        frame rather than looping a gesture back to its start mid-sentence */
-    const t=Math.min(player.elapsed/1000,player.clip.seconds-1e-3);
+    const t=player.reelCues?rigTimeFor(player.clip)
+           :Math.min(player.elapsed/1000,player.clip.seconds-1e-3);
     try{
       const k=player.clip.kind;
       if(k==='world')drawWorldClip(player.clip,t);
@@ -1494,6 +1748,7 @@ function render(now){
     ctx.fillStyle="#C93A2E";
     ctx.beginPath();ctx.arc(sx(nib[0]),sy(nib[1]),5,0,7);ctx.fill();
   }
+  if(_tr)ctx.restore();          /* captions are overlaid AFTER the transition */
   drawCaption(); drawAvatar(now); renderBeats();
 }
 function fmt(s){s=Math.max(0,Math.round(s));return (s/60|0)+":"+String(s%60).padStart(2,"0");}
@@ -1524,8 +1779,15 @@ function loop(now){
       const cb=player.onDone; player.onDone=null; cb&&cb();
     }
   }
-  if(player.annoActive&&!player.paused){
-    /* fast reveal — a marker stroke, not a slow live drawing */
+  if(player.annoActive&&(!player.paused||answering)){
+    /* fast reveal — a marker stroke, not a slow live drawing.
+       The `answering` clause is load-bearing: an interrupt PAUSES the lesson
+       and then awaits its own annotation strokes, so gating this purely on
+       !paused deadlocks the whole Q&A — the promise never resolves,
+       `answering` never resets, and the Ask button is dead for the rest of
+       the session. Paused-by-hand still freezes mid-chapter annotations;
+       paused-because-answering must keep drawing, because drawing the
+       answer is the point of the pause. */
     player.annoBudget+=dt*0.30*Math.max(player.annoTotal/40,1);
     if(player.annoBudget>=player.annoTotal){
       player.annoActive=false; const cb=player.annoOnDone; player.annoOnDone=null; cb&&cb();
@@ -1581,10 +1843,11 @@ function wipe(){
    from, so the footage on the screen is footage of the step being performed
    in front of it. Each cue owns a <video> element, preloaded; only the
    active one is playing. */
-const REEL={cues:[],els:new Map(),idx:-1};
+const REEL={cues:[],els:new Map(),idx:-1,cur:null,force:null};
 function setReel(cues){
   REEL.els.forEach(v=>{v.pause();v.src="";});
   REEL.els.clear(); REEL.cues=cues&&cues.length?cues:[]; REEL.idx=-1;
+  REEL.cur=null; REEL.force=null;
   REEL.cues.forEach(c=>{
     if(!c.url||REEL.els.has(c.url))return;
     const v=document.createElement('video');
@@ -1596,7 +1859,20 @@ function setReel(cues){
 function reelAt(t){
   if(!REEL.cues.length)return null;
   let i=-1;
-  for(let k=0;k<REEL.cues.length;k++){
+  if(REEL.force!=null){
+    /* An action chapter cuts on the NARRATION, not on a timer: the clip
+       changes at the instant the voice starts describing that action, so the
+       film always shows what is being said. A proportional time slice was a
+       good estimate, but an estimate is exactly what drifts — one long action
+       and the picture is a sentence behind for the rest of the chapter.
+       An action whose search found nothing holds the previous clip rather
+       than going dark, and never borrows a LATER action's film. */
+    i=REEL.cues.findIndex(c=>c.ai===REEL.force);
+    if(i<0)for(let k=0;k<REEL.cues.length;k++)
+      if(REEL.cues[k].ai<REEL.force)i=k;
+    if(i<0)i=0;
+  }
+  if(i<0)for(let k=0;k<REEL.cues.length;k++){
     const c=REEL.cues[k];
     if(t>=c.start&&t<c.end){i=k;break;}
     if(t>=c.start)i=k;            /* past the last cue: hold it, do not go dark */
@@ -1608,6 +1884,7 @@ function reelAt(t){
     REEL.els.forEach((el,url)=>{if(url!==cue.url)el.pause();});
     if(v){try{v.currentTime=0;}catch(_){ } v.play().catch(()=>{});}
   }
+  REEL.cur=cue;      /* the action currently on film, for the label */
   return {el:(v&&v.readyState>=2)?v:null,cue:cue};
 }
 function setSceneMedia(videoUrl,imgUrl){
@@ -1626,8 +1903,21 @@ function setSceneMedia(videoUrl,imgUrl){
 function playScene(sc,ms){
   return new Promise(res=>{
     setSceneMedia(sc.videoUrl||null,sc.imageUrl||null);
+    if(sc.reelVideo&&player.videoEl&&sc.videoUrl===sc.reelVideo){
+      /* the edited reel SPEAKS — its narration is in the file — so it plays
+         with sound and runs once instead of looping: a loop would restart
+         the voice mid-chapter. Muted only if the user turned Voice off. */
+      player.videoEl.muted=!voiceOn;
+      player.videoEl.loop=false;
+    }
+    mptTransStart();      /* a chapter enters with MPT's transition, not a cut */
     setReel(sc.reel||null);
     player.clip=sc.clip||null;
+    /* action chapters expose their cue windows so the rig overlay can be
+       scrubbed to the action the film is showing; every other mode keeps
+       the plain clock */
+    player.reelCues=sc.mode==="actions"
+      ?((sc.reelCues&&sc.reelCues.length?sc.reelCues:sc.reel)||null):null;
     /* a new room starts on the director's camera, and the board only eats
        drag gestures while there is a room to orbit */
     resetView(); WORLD_ANCHORS=[]; WORLD_CAM=null;
@@ -1727,6 +2017,98 @@ function avatarState(){
      student's own body is the face worth looking at, not the cartoon's */
   a.classList.toggle('rec-hidden',!!recorder||COACH.on);
 }
+/* ============ neural narration (MoneyPrinterTurbo /api/tts) ============
+   speechSynthesis is free but robotic, and for a language the machine has no
+   voice installed for it is silently WRONG — an Indonesian lesson read in an
+   American accent, with nothing on screen to say so. The server has edge-tts,
+   which has the voice, needs no API key and costs nothing per chapter, so it
+   is preferred and the browser becomes the fallback rather than the default.
+
+   The real duration comes back in a header, so lipsync runs off the audio's
+   actual length instead of a word-count guess; the mouth stops when the voice
+   does. Everything else about a chapter is unchanged — this is one function
+   swapped underneath, which is why pause, interrupt and resume keep working. */
+let ttsAudio=null, ttsDone=null;
+function ttsStop(){
+  /* Resolving the pending promise is not optional. speechSynthesis.cancel()
+     fires onend, so the browser path always settled and `await speech` in the
+     Q&A handler always returned. An <audio> that is merely paused fires
+     nothing, so without this a pause mid-answer would leave that await hanging
+     for good — answering stuck true and the Ask button dead for the session.
+     A cancelled narration is FINISHED, not failed: resolve true so the caller
+     does not fall back and start talking over itself. */
+  const fin=ttsDone; ttsDone=null;
+  if(ttsAudio){
+    try{ttsAudio.pause();}catch(e){}
+    if(ttsAudio.src&&ttsAudio.src.startsWith("blob:"))URL.revokeObjectURL(ttsAudio.src);
+    ttsAudio=null;
+  }
+  if(fin)fin(true);
+}
+function speakNeural(text){
+  /* -> Promise<bool>. false means "could not", and the caller falls back to
+     speechSynthesis, because a chapter that goes silent is worse than one
+     read in the wrong accent.
+
+     /api/tts answers with a URL and WORD CUES rather than bare audio. The
+     cues are the whole point: the avatar's mouth is driven by word
+     boundaries, which speechSynthesis emits and a plain <audio> does not, so
+     without them the mouth would flap on an average while a real voice said
+     something else. With them the lipsync is tighter than the browser's. */
+  return (async()=>{
+    const r=await fetch("/api/tts",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text,lang:lessonLang})});
+    if(!r.ok)return false;
+    const d=await r.json().catch(()=>null);
+    /* a server without the pipeline answers {"disabled":true,"why":...} */
+    if(!d||d.disabled||!d.audio)return false;
+    return await new Promise(done=>{
+      ttsStop();
+      const a=new Audio(d.audio); ttsAudio=a;
+      let timers=[];
+      const end=ok=>{timers.forEach(clearTimeout); timers=[];
+                     if(ttsAudio===a)ttsStop(); done(ok);};
+      a.onended=()=>end(true);
+      a.onerror=()=>end(false);
+      a.play().then(()=>{
+        speaking=true;
+        const cues=Array.isArray(d.cues)?d.cues:[];
+        if(cues.length){
+          /* each word's own start and length, straight off the synthesiser.
+             The guard matters: pausing calls ttsStop(), and a timer that
+             fires afterwards must not move a mouth that is meant to be shut. */
+          cues.forEach(c=>timers.push(setTimeout(()=>{
+            if(ttsAudio===a)lipSay(String(c.w||""),Math.max(90,(c.d||0.2)*1000));
+          },Math.max(0,(c.t||0)*1000))));
+        }else{
+          /* a voice that reports no boundaries still has a real length */
+          lipRun(text,(d.seconds>0?d.seconds
+                       :Math.max(1,text.split(/\s+/).length*0.36))*1000);
+        }
+      }).catch(()=>end(false));      /* autoplay blocked -> browser voice */
+    });
+  })().catch(()=>false);
+}
+/* ============ the edit: film cut to the explanation ============
+   An action chapter is narrated action by action rather than as one
+   paragraph, and each action's clip is cut in at the instant its sentence
+   starts. That is the whole edit: the picture is never showing step 2 while
+   the voice is still on step 1, because the same loop drives both.
+
+   Timing comes from the audio itself — speak() resolves when the neural voice
+   actually finishes that sentence — so a long instruction holds its clip
+   longer without anyone having to estimate how long it takes to say. */
+async function speakActions(sc){
+  const acts=actionList(sc);
+  for(let i=0;i<acts.length;i++){
+    if(lessonAbort||!lessonRunning)break;
+    await waitWhilePaused();
+    REEL.force=i;                 /* cut to the action about to be described */
+    await speak(acts[i].text);    /* resolves on the real end of the audio */
+  }
+  REEL.force=null;
+}
 function speak(text,qa){
   return new Promise(res=>{
     /* A chapter with no narration is legal JSON and the model does emit one
@@ -1738,6 +2120,21 @@ function speak(text,qa){
     const off=()=>{speaking=false;lipStop();res();};
     if(!text){off();return;}
     const estMs=900+text.split(/\s+/).length*300;
+    if(voiceOn&&ttsEnabled){
+      if('speechSynthesis'in window)speechSynthesis.cancel();
+      speakNeural(text).then(ok=>{
+        if(ok){off();return;}
+        ttsEnabled=false;          /* one failure is enough; stop retrying */
+        chatMsg('sys','neural voice unavailable — using the browser voice');
+        speakBrowser(text,off,estMs);
+      });
+      return;
+    }
+    speakBrowser(text,off,estMs);
+  });
+}
+/* the original browser path, unchanged, now reached as a fallback */
+function speakBrowser(text,off,estMs){
     if(!voiceOn||!('speechSynthesis'in window)){
       speaking=true; lipRun(text,estMs); setTimeout(off,estMs); return;
     }
@@ -1758,7 +2155,6 @@ function speak(text,qa){
     };
     u.onend=off; u.onerror=off;
     speechSynthesis.speak(u);
-  });
 }
 function chatMsg(cls,html){
   const d=document.createElement('div');d.className='msg '+cls;d.innerHTML=html;
@@ -1937,6 +2333,7 @@ function pauseLesson(){
   if(player.videoEl)player.videoEl.pause();
   REEL.els.forEach(v=>v.pause());        /* freeze the step clip too */
   if('speechSynthesis'in window)speechSynthesis.cancel();
+  ttsStop();                     /* the neural voice is an <audio>, not an utterance */
   speaking=false; lipStop(); setBadge('paused'); $('pauseBtn').textContent='Resume';
 }
 function resumeLesson(){
@@ -2005,10 +2402,46 @@ ${hive}
         if(lbl)chatMsg('sys','&#9673; camera moved — '+lbl);
       }catch(e){chatMsg('sys','(camera move was malformed, ignored)');}
     }
+    /* Real film as part of the ANSWER. Swapped in BEFORE the strokes play,
+       and awaited on purpose: a stock search is a second or two, and a circle
+       drawn around a part on the diagram it is about to replace would point at
+       nothing. Order is the whole feature — footage, then marker strokes on
+       top of it, while the neural voice explains. */
+    const fm=raw.match(/<footage>([\s\S]*?)<\/footage>/);
+    const fterm=fm?fm[1].trim().slice(0,120):"";
+    if(fterm&&!nm&&!COACH.on){
+      if(!footageEnabled){
+        chatMsg('sys','real footage was offered but the stock library is off'
+                     +(footageWhy?' ('+footageWhy+')':''));
+      }else{
+        try{
+          $('status').textContent="Finding real footage — seconds";
+          $('status').className='status busy';
+          const fr=await fetch("/api/stock",{method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({terms:[fterm],seconds:5})});
+          const fd=await fr.json();
+          const furl=(fr.ok&&Array.isArray(fd.videos))?fd.videos[0]:null;
+          if(furl){
+            setSceneMedia(furl,null);
+            /* keep it on the chapter so resuming does not throw it away */
+            const cur=scenes[currentScene]; if(cur)cur.videoUrl=furl;
+            chatMsg('sys','&#9635; real footage — &ldquo;'+fterm+'&rdquo;');
+          }else chatMsg('sys','no footage for &ldquo;'+fterm+'&rdquo;'
+                             +(fd.why?' ('+fd.why+')':''));
+        }catch(e){}
+        $('status').textContent=""; $('status').className='status';
+      }
+    }
+    /* Nothing in an answer is allowed to hold the Ask button hostage.
+       These promises resolve on their own in every path we know; the races
+       are for the path we don't — a stalled one costs a bounded wait, not
+       the rest of the session. */
+    const bounded=(p,ms)=>Promise.race([p,new Promise(r=>setTimeout(r,ms))]);
     const speech=speak(answer,true);
-    await playAnnotations(annos,anchorSnap);
+    await bounded(playAnnotations(annos,anchorSnap),20000);
     for(const a of annos)if(a.label)chatMsg('sys','&#10148; annotated: '+a.label);
-    await speech;
+    await bounded(speech,90000);
     if(nm&&COACH.on){
       chatMsg('sys','(a new chapter was offered — finish coaching to play it, '
                    +'the camera session would be thrown away)');
@@ -2163,7 +2596,9 @@ function prepScene(sc){
     sc.seconds=sc.mode==="world"?Math.max(12,Math.min(30,longest*4||14))
                                 :Math.max(10,Math.min(24,longest*3||12));
   }
-  if(!sc.seconds)sc.seconds=Math.max(6,Math.min(16,(sc.steps||[]).length*4||8));
+  if(!sc.seconds)sc.seconds=Math.max(6,Math.min(20,
+    (Array.isArray(sc.actions)&&sc.actions.length?sc.actions.length*5
+     :(sc.steps||[]).length*4)||8));
   return sc;
 }
 function ensureVideo(sc,quiet){
@@ -2218,29 +2653,67 @@ function stepCues(sc){
   return cues;
 }
 function ensureStepVideos(sc,quiet){
-  if(!videoEnabled||sc.mode!=="world"||!sc.step_videos||sc.reel!==undefined)
+  /* Two providers, one contract. Diffusion INVENTS footage of the step and
+     bills per clip; MoneyPrinterTurbo's stock search finds footage that was
+     really filmed, in seconds instead of 30-90s, for nothing. For "hands
+     turning a wrench" the real thing is both faster and more honest, so
+     stock is preferred and diffusion is what you pay for when no stock
+     clip could exist. Both answer {"videos":[url|null,...]}, so everything
+     downstream — the cue list, the cut points, the quiet screen on a miss —
+     is untouched. */
+  if(sc.mode!=="world"||!sc.step_videos||sc.reel!==undefined)
     return sc._reelJob||Promise.resolve();
+  if(!videoEnabled&&!footageEnabled){
+    /* the director asked for footage and neither provider can supply it.
+       Say which one was missing rather than leaving the screen quietly
+       blank — "nothing happened" is the one thing a lesson must not do. */
+    sc.reel=[];
+    if(!sc._reelSaid){sc._reelSaid=1;
+      chatMsg('sys','step footage unavailable — '+(footageWhy
+        ||'no stock provider and no REPLICATE_API_TOKEN')
+        +'; the room plays without the screen');}
+    return Promise.resolve();
+  }
   if(sc._reelJob)return sc._reelJob;
   const cues=stepCues(sc);
   if(!cues.length){sc.reel=[];return Promise.resolve();}
+  /* an explicit step_videos array is a director's cinematic prompt — that is
+     a diffusion instruction, so honour it by staying on diffusion */
+  const stock=footageEnabled&&!(Array.isArray(sc.step_videos)&&videoEnabled);
   sc._reelJob=(async()=>{
     try{
       if(!quiet){
-        $('status').textContent=`Generating ${cues.length} step clips — `
-                               +`30–90s, all at once`;
+        $('status').textContent=stock
+          ?`Finding ${cues.length} real clips — seconds`
+          :`Generating ${cues.length} step clips — 30–90s, all at once`;
         $('status').className='status busy';}
-      const r=await fetch("/api/videos",{method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({prompts:cues.map(c=>c.prompt)})});
+      const r=stock
+        ?await fetch("/api/stock",{method:"POST",
+            headers:{"Content-Type":"application/json"},
+            /* the STEP TEXT is the search, not the cinematic prompt: a stock
+               library matches "seat the chain", not a paragraph about light */
+            body:JSON.stringify({terms:cues.map(c=>c.text),
+                                 seconds:Math.max(2,Math.round(
+                                   cues[0].end-cues[0].start)||4)})})
+        :await fetch("/api/videos",{method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({prompts:cues.map(c=>c.prompt)})});
       const d=await r.json();
       const urls=(r.ok&&Array.isArray(d.videos))?d.videos:[];
       sc.reel=cues.map((c,i)=>({...c,url:urls[i]||null})).filter(c=>c.url);
       const err=(d.errors||[]).find(Boolean);
+      const what=stock?`real clips (${d.source||"stock"})`:"step clips";
       chatMsg('sys',sc.reel.length
-        ?`&#9635; ${sc.reel.length}/${cues.length} step clips ready — the `
+        ?`&#9635; ${sc.reel.length}/${cues.length} ${what} ready — the `
          +`screen cuts with the steps`+(quiet?' (prefetched)':'')
-        :'step clips unavailable'+(err?' ('+err+')':
-            d.error?' ('+d.error.message+')':''));
+        :what+' unavailable'+(err?' ('+err+')':
+            d.why?' ('+d.why+')':d.error?' ('+d.error.message+')':''));
+      /* a stock search that found nothing is not the end of the road if the
+         paid provider is configured — fall through to it once */
+      if(!sc.reel.length&&stock&&videoEnabled){
+        sc.reel=undefined; sc._reelJob=null; footageEnabled=false;
+        return ensureStepVideos(sc,quiet);
+      }
     }catch(e){sc.reel=[];}
     if(!quiet){$('status').textContent="";$('status').className='status';}
   })();
@@ -2403,10 +2876,242 @@ function ensureClip(sc,quiet){
   })();
   return sc._clipJob;
 }
+/* ============ real film under EVERY explanation ============
+   The board used to be able to show real footage in exactly two places: a
+   "hybrid" chapter's diffusion backdrop, and a room's screen. Both cost money
+   per clip, so most chapters were a diagram or a rig on blank paper and the
+   real thing was never seen.
+
+   MoneyPrinterTurbo's stock search changes the economics — a clip that was
+   really filmed, in seconds, for nothing — so footage stops being a mode and
+   becomes a LAYER available to every mode. An "anim" chapter can now explain
+   over film of the actual part; a "hand" chapter can put the tracked rig in
+   front of a real pair of hands doing the same move.
+
+   The annotation layer needs no changes at all to sit on top of it, which is
+   the point: drawMediaFrame() already reports onMedia, and every stroke and
+   element already switches to the heavier weight and the paper-white halo
+   that keeps it readable over video. Footage, voice and marker strokes are
+   three independent layers that happen to compose. */
+function footageTerms(sc){
+  /* The director may name the search; otherwise the chapter title is a far
+     better stock query than its narration, because narration is prose and a
+     stock library matches nouns. */
+  const given=(sc.footage===true?"":sc.footage)||"";
+  const t=String(given||sceneName(sc)||topicNow||"").trim();
+  return t.slice(0,120);
+}
+/* ============ MoneyPrinterTurbo action animation ============
+   The board's original "anim" mode drew the explanation as shapes — boxes,
+   circles, arrows appearing beat by beat. It is instant and free, and it is
+   also a diagram of an action rather than the action: a box labelled "chain"
+   sliding next to a box labelled "sprocket" is not what seating a chain looks
+   like, and a student who has never done it cannot learn the movement from it.
+
+   An ACTION CHAPTER replaces the shapes with MoneyPrinterTurbo's own model:
+   the chapter is a list of ACTIONS, each action gets its own real clip, and
+   the reel cuts between them on the action boundaries — the same
+   one-clip-per-script-line composition its renderer uses, played live instead
+   of muxed to a file. The marker strokes still land on top, so the annotator
+   is now pointing at a real hand doing a real thing.
+
+   Each action's slice of the chapter is proportional to how long it takes to
+   SAY it, not an equal division: "undo the quick link" and "thread the chain
+   through the rear derailleur cage, over the jockey wheels" are not the same
+   length of instruction and should not get the same length of film. */
+function actionList(sc){
+  const src=Array.isArray(sc.actions)&&sc.actions.length?sc.actions
+           :Array.isArray(sc.hand_steps)&&sc.hand_steps.length?sc.hand_steps
+           :Array.isArray(sc.motion_steps)?sc.motion_steps:[];
+  return src.map(a=>typeof a==="string"?{text:a,footage:""}
+                   :{text:String(a.text||a.step||""),
+                     footage:String(a.footage||"")})
+            .filter(a=>a.text.trim()).slice(0,6);
+}
+function actionCues(sc,urls){
+  const acts=actionList(sc), total=Math.max(4,sc.seconds||10);
+  const weight=acts.map(a=>Math.max(3,a.text.split(/\s+/).length));
+  const sum=weight.reduce((x,y)=>x+y,0)||1;
+  let t=0;
+  return acts.map((a,i)=>{
+    const d=total*weight[i]/sum;
+    const cue={start:t,end:(i===acts.length-1?total:t+d),
+               ai:i,                       /* which action this clip is OF */
+               text:a.text,url:urls[i]||null};
+    t+=d; return cue;
+  }).filter(c=>c.url);
+}
+async function liveCutActions(sc,acts,quiet){
+  /* the browser-side edit: raw clips, cut live by the narration loop.
+     The fallback when the server cannot compose the real thing. */
+  const r=await fetch("/api/stock",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({terms:acts.map(a=>a.footage||a.text),seconds:4})});
+  const d=await r.json();
+  const urls=(r.ok&&Array.isArray(d.videos))?d.videos:[];
+  sc.reel=actionCues(sc,urls);
+  chatMsg('sys',sc.reel.length
+    ?`&#9635; ${sc.reel.length}/${acts.length} action clips — the film cuts `
+     +`with the actions`+(quiet?' (prefetched)':'')
+    :'no action footage'+(d.why?' ('+d.why+')':''));
+}
+function ensureActions(sc,quiet){
+  if(sc.reel!==undefined)return sc._reelJob||Promise.resolve();
+  if(sc._reelJob)return sc._reelJob;
+  const acts=actionList(sc);
+  if(!acts.length){sc.reel=[];return Promise.resolve();}
+  if(!footageEnabled){
+    sc.reel=[];
+    if(!quiet)chatMsg('sys','action footage unavailable'
+                           +(footageWhy?' ('+footageWhy+')':''));
+    return Promise.resolve();
+  }
+  sc._reelJob=(async()=>{
+    try{
+      /* An answer cannot keep the student waiting on ffmpeg. A chapter the
+         TUTOR inserts mid-conversation skips the server edit and goes
+         straight to the live cut — clips in seconds, rig on top, and the
+         narration loop still forces every cut to the action being spoken.
+         Only director-planned chapters get the composed reel. */
+      if(sc.qa){
+        await liveCutActions(sc,acts,quiet);
+        try{await ensureRigOverlay(sc);}catch(e){}
+        return;
+      }
+      if(!quiet){$('status').textContent=
+          `Editing ${acts.length} actions into a reel — the shots are cut to `
+          +`the narration`;
+        $('status').className='status busy';}
+      /* THE EDIT, done properly: /api/reel speaks each action, trims its clip
+         to exactly the sentence's length, burns the description in as that
+         shot's subtitle and muxes the voice — MoneyPrinterTurbo's renderer
+         producing the chapter itself. The page just polls for the file. */
+      const r=await fetch("/api/reel",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({actions:acts,lang:lessonLang})});
+      const d=await r.json();
+      if(d.job){
+        for(let n=0;n<150;n++){                    /* up to ~5 minutes */
+          await new Promise(z=>setTimeout(z,2000));
+          const s=await (await fetch("/api/reel/status?job="
+                                     +encodeURIComponent(d.job))).json();
+          if(!quiet&&s.state&&s.state!=="done"&&s.state!=="error"){
+            $('status').textContent=`Editing the reel — ${s.state} ${s.pct||0}%`;
+            $('status').className='status busy';}
+          if(s.state==="done"&&s.video){
+            sc.reelVideo=s.video; sc.reelCues=s.cues||[];
+            if(s.seconds)sc.seconds=Math.max(sc.seconds||0,s.seconds);
+            sc.reel=[];          /* the cut lives inside the file now */
+            chatMsg('sys',`&#9635; edited reel ready — ${(s.cues||[]).length} `
+              +`shots, each held for exactly as long as its action is `
+              +`described`+(quiet?' (prefetched)':''));
+            try{await ensureRigOverlay(sc);}catch(e){}
+            if(!quiet){$('status').textContent="";$('status').className='status';}
+            return;
+          }
+          if(s.state==="error"){
+            chatMsg('sys','reel edit failed ('+(s.error||'unknown')
+                         +') — cutting live instead');
+            break;
+          }
+        }
+      }else if(d.why&&!quiet){
+        chatMsg('sys','no server edit ('+d.why+') — cutting live instead');
+      }
+      /* no composed file: fall back to cutting raw clips in the browser */
+      await liveCutActions(sc,acts,quiet);
+    }catch(e){sc.reel=[];}
+    /* the physical layer rides along either way — rig over film, or rig on
+       paper when the film never arrived */
+    try{await ensureRigOverlay(sc);}catch(e){}
+    if(!quiet){$('status').textContent="";$('status').className='status';}
+  })();
+  return sc._reelJob;
+}
+async function ensureRigOverlay(sc){
+  /* The PHYSICAL layer of an action chapter: the tracked rig performs the
+     same actions over the film. The reel shows what the action looks like;
+     the rig shows what the BODY does — landmarks, finger chains, motion
+     vectors — and because both are driven by the same action list, the rig
+     is always demonstrating the movement the footage is showing.
+
+     Free and instant (pure maths, no key), so it rides along rather than
+     being a mode of its own. Solved by /api/hand for finger work and
+     /api/motion when the actions read as whole-body. */
+  if(sc.clip!==undefined)return;
+  const acts=actionList(sc).map(a=>a.text);
+  if(!acts.length){sc.clip=null;return;}
+  const body=/\b(stand|squat|lift|carry|walk|brace|kneel|bend|lean|step|reach|posture|shoulder|leg|knee|hip)\b/i;
+  const wantsBody=sc.rig==="skeleton"||(sc.rig!=="hand"&&acts.some(t=>body.test(t)));
+  try{
+    const r=await fetch(wantsBody?"/api/motion":"/api/hand",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({steps:acts,seconds:sc.seconds||undefined})});
+    const d=await r.json();
+    sc.clip=(r.ok&&d&&(d.frames||d.kind))?d:null;
+    if(sc.clip)chatMsg('sys','&#9995; '+(wantsBody?'body':'hand')
+      +' rig overlay ready — the physical motion plays over the film');
+  }catch(e){sc.clip=null;}
+}
+function rigTimeFor(clip){
+  /* Map chapter time into the rig's own timeline so the rig performs the
+     SAME action the film is currently showing. The reel's cues say which
+     action window we are in (or REEL.force says it exactly, when the live
+     narration is driving); the rig's solved segments say where that action
+     lives on ITS clock. Progress through the cue window scrubs through the
+     matching segment, so a long sentence stretches the gesture rather than
+     letting the rig run ahead to the next one. */
+  const cues=player.reelCues;
+  if(!cues||!cues.length||!clip.segments||!clip.segments.length)
+    return Math.min(player.elapsed/1000,clip.seconds-1e-3);
+  const t=player.elapsed/1000;
+  let i=REEL.force!=null?REEL.force
+       :cues.findIndex(c=>t>=c.start&&t<c.end);
+  if(i<0)i=t>=cues[cues.length-1].end?cues.length-1:0;
+  const c=cues[Math.min(i,cues.length-1)];
+  const seg=clip.segments[Math.min(i,clip.segments.length-1)];
+  const frac=Math.max(0,Math.min(1,(t-c.start)/Math.max(0.5,c.end-c.start)));
+  return Math.min(seg.start+frac*Math.max(0,seg.end-seg.start),
+                  clip.seconds-1e-3);
+}
+function ensureFootage(sc,quiet){
+  /* One real clip behind this chapter. Never overrides a clip that is already
+     there: a hybrid chapter that paid for diffusion keeps what it paid for. */
+  if(!footageEnabled||sc.footage===false||sc.videoUrl!==undefined
+     ||sc.imageUrl||sc._footJob)
+    return sc._footJob||Promise.resolve();
+  /* only when the director asked, or when nothing else will fill the frame */
+  const wanted=sc.footage!==undefined||!(sc.image_prompt||sc.video_prompt);
+  if(!wanted)return Promise.resolve();
+  const term=footageTerms(sc);
+  if(!term)return Promise.resolve();
+  sc._footJob=(async()=>{
+    try{
+      if(!quiet){$('status').textContent="Finding real footage — seconds";
+                 $('status').className='status busy';}
+      const r=await fetch("/api/stock",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({terms:[term],
+                             seconds:Math.max(2,Math.round(sc.seconds||8))})});
+      const d=await r.json();
+      const url=(r.ok&&Array.isArray(d.videos))?d.videos[0]:null;
+      if(url){sc.videoUrl=url;
+        chatMsg('sys','&#9635; real footage under this chapter — &ldquo;'
+                     +term+'&rdquo;'+(quiet?' (prefetched)':''));}
+      else if(!quiet&&(d.why||d.disabled))
+        chatMsg('sys','no stock footage ('+(d.why||'unavailable')+')');
+    }catch(e){}
+    if(!quiet){$('status').textContent="";$('status').className='status';}
+  })();
+  return sc._footJob;
+}
 const ensureMedia=(sc,quiet)=>
   /* a chapter with nothing to draw gets performed by the rigs first */
   sc.needsRescue?(delete sc.needsRescue,
                   rescueScene(sc).then(()=>ensureMedia(sc,quiet))):
+  /* the action reel is the default explanation now: real film per action,
+     cut on the actions, with the strokes drawn over it */
+  sc.mode==="actions"?ensureActions(sc,quiet):
   sc.mode==="hybrid"?ensureVideo(sc,quiet):
   sc.mode==="photo"?ensureImage(sc,quiet):
   /* a room is solved and its footage generated at the same time; the room
@@ -2415,12 +3120,33 @@ const ensureMedia=(sc,quiet)=>
      is pure maths and instant, so nothing waits on that ordering */
   sc.mode==="world"?ensureClip(sc,quiet).then(()=>Promise.all(
       [ensureVideo(sc,quiet),ensureImage(sc,quiet),ensureStepVideos(sc,quiet)])):
-  CLIP_MODES[sc.mode]?ensureClip(sc,quiet):Promise.resolve();
+  /* every other mode — anim, hand, skeleton, lineform, compose — solves its
+     clip and looks for real film to put behind it AT THE SAME TIME. The rig
+     is instant and the search is a second, so the pair costs what the slower
+     of the two costs, and a chapter that finds nothing simply plays on paper
+     exactly as it always did. */
+  CLIP_MODES[sc.mode]?Promise.all([ensureClip(sc,quiet),
+                                   ensureFootage(sc,quiet)])
+  :ensureFootage(sc,quiet);
 
 /* No token, or generation failed: fall back to the animation engine, which
    always works — never leave annotation strokes floating over an empty board. */
 function coerceMode(sc){
   if(CLIP_MODES[sc.mode])return;                          /* always available */
+  if(sc.mode==="actions"){
+    /* an action chapter with no stock library behind it has nothing to cut.
+       Rather than play an empty board, hand the ACTIONS to the hand rig —
+       they are already imperative step text, which is exactly what /api/hand
+       parses — so the movement is still shown, just performed rather than
+       filmed. The shapes are the last resort, not the first. */
+    if(footageEnabled&&actionList(sc).length)return;
+    const acts=actionList(sc).map(a=>a.text);
+    if(acts.length){sc.mode="hand"; sc.hand_steps=acts;
+                    chatMsg('sys','no stock library — the hand rig performs '
+                                 +'these actions instead');
+                    return;}
+    sc.mode="anim";
+  }
   if(sc.mode==="hybrid"&&!videoEnabled)
     sc.mode=(imageEnabled&&(sc.image_prompt||sc.video_prompt))?"photo":"anim";
   if(sc.mode==="photo"){
@@ -2459,6 +3185,21 @@ function ensureAnnotations(sc){
     ?sc.els.map(e=>{const[a,b]=elAnchor(e);
        return `${e.label||e.text} at x${Math.round(a)}y${Math.round(b)}`;})
        .filter(s=>!s.startsWith(" at")).join("; ")
+    :sc.mode==="actions"
+      /* the reel is full-frame film of the actions in order — tell the
+         annotator what is being performed so its circles and arrows land on
+         the film's subject, not on nothing. When the server's perceive pass
+         looked at the actual frames, each cue carries WHAT is visible and
+         WHERE it sits on the grid, so a circle drawn around "the chain tool
+         at x22y31" rings the real pixels instead of an assumed centre —
+         the difference between annotating the film and annotating a guess. */
+      ?"real film, full frame, of these actions in order: "
+       +((sc.reelCues&&sc.reelCues.some(c=>c.subject))
+          ?sc.reelCues.map((c,i)=>`${i+1}. ${c.text}`
+             +(c.subject?` — the ${c.subject} is around x${c.grid[0]}y${c.grid[1]}`:""))
+             .join("; ")
+          :actionList(sc).map((a,i)=>`${i+1}. ${a.text}`).join("; ")
+           +". The subject is centred and fills most of the frame.")
     :CLIP_MODES[sc.mode]
       ?(sc.clip?clipContextFor(sc.clip).join("; "):"")
     :(sc.image_prompt||sc.video_prompt||"");
@@ -2520,12 +3261,27 @@ async function runLesson(startAt=0){
       if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;continue;}
       captionText=sc.narration; captionQA=false;
       wipe();
-      if(voiceOn)speak(sc.narration); else {speaking=false;}
+      /* Three ways a chapter can be voiced, in order of preference:
+         - an EDITED REEL: the mp4 already contains the voice, and each shot
+           was cut to its sentence at compose time — the file IS the sync, so
+           the board neither speaks nor captions over it;
+         - a LIVE CUT: the board narrates action by action and forces the raw
+           clip to match the sentence being spoken;
+         - everything else: one narration over one backdrop, as always. */
+      const edited=sc.mode==="actions"&&sc.reelVideo;
+      const acting=!edited&&sc.mode==="actions"&&(sc.reel||[]).length>0;
+      let narrating=null;
+      if(edited){sc.videoUrl=sc.reelVideo; captionText="";}
+      else if(acting)narrating=speakActions(sc);
+      else if(voiceOn)speak(sc.narration); else {speaking=false;}
       if(scenes[i+1]){                       /* prefetch the next chapter */
         coerceMode(scenes[i+1]);
         ensureMedia(scenes[i+1],true); ensureAnnotations(scenes[i+1]);
       }
       await playScene(sc,(sc.seconds||8)*1000);
+      /* the chapter is not over until the last action has been described —
+         the visual timer is a floor, the narration is the truth */
+      if(narrating)await narrating;
       if(lessonAbort)break;
       await waitWhilePaused();
       if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;}
@@ -2561,7 +3317,28 @@ async function startLesson(){
   if(voiceOn)withVoices(()=>voiceNote(true));   /* before a word is spoken */
   try{
     $('status').textContent="Director is storyboarding the animation";$('status').className='status busy';
-    let raw=await askClaude(DIRECTOR_SYS+langRule(),`Topic: ${topicNow}`,[],6000);
+    /* The action reel is film of a MOVEMENT, so it only earns its place when
+       the lesson is a technical how-to — a wiki-style procedure somebody
+       performs with their hands. "How photosynthesis works" has no gesture to
+       film, and a stock search for it returns handsome greenery that
+       illustrates nothing, so the reel is switched off rather than offered
+       and wasted. The server decides, from the hivemind's own steps first and
+       the phrasing second, and says why. */
+    const gate=await fetch("/api/howto",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({topic:topicNow})}).then(r=>r.json()).catch(()=>({}));
+    const technical=gate.technical===true&&footageEnabled;
+    if(gate.why)chatMsg('sys',(technical?'&#9635; technical how-to — action '
+        +'reels on':'&#9998; not a hands-on procedure — explaining it instead')
+        +' ('+gate.why+')');
+    const modeRule=technical?"":
+      `\n\nTHIS LESSON IS NOT A HANDS-ON PROCEDURE. Do NOT use "actions" mode `
+      +`and do NOT set "footage" on any chapter: there is no movement to film `
+      +`and stock film of the subject would decorate the lesson without `
+      +`explaining it. Use "anim" for structure, and the rig modes only if a `
+      +`real human movement genuinely appears in the topic.`;
+    let raw=await askClaude(DIRECTOR_SYS+modeRule+langRule(),
+                            `Topic: ${topicNow}`,[],6000);
     scenes=parseModelJSON(raw,"director").map(prepScene);
     renderSceneList(); renderTimeline();
     $('status').textContent="";$('status').className='status';
@@ -2571,6 +3348,51 @@ async function startLesson(){
   }finally{$('go').disabled=false;}
 }
 $('go').onclick=startLesson;
+
+/* ============ teach from a book ============
+   A how-to book is a finished curriculum — someone already sequenced the
+   skills and wrote the exercises as imperatives. So the book replaces the
+   DIRECTOR, not the player: the server reads the PDF, converts its own
+   exercises into hand-rig and action-reel chapters in its own teaching
+   order, and ingests its procedures into the hivemind. From there it is an
+   ordinary lesson: same narration, same footage, same rigs, same strokes —
+   and an interruption is answered from what the book says, with the book
+   cited as the source. */
+$('bookBtn').onclick=()=>$('bookfile').click();
+$('bookfile').onchange=async e=>{
+  const file=e.target.files&&e.target.files[0];
+  e.target.value="";                       /* same file can be picked again */
+  if(!file)return;
+  if(answering){$('status').textContent="Finishing an answer first — try again in a second";
+    $('status').className='status busy';return;}
+  if(COACH.on)await coachStop();
+  if(lessonRunning){chatMsg('sys','&#9632; stopped the lesson that was playing');
+    await stopLesson();}
+  $('bookBtn').disabled=true;
+  $('status').textContent=`Reading "${file.name}" — extracting the book and `
+                         +`structuring it into chapters`;
+  $('status').className='status busy';
+  try{
+    const fd=new FormData(); fd.append("file",file);
+    const r=await fetch("/api/book",{method:"POST",body:fd});
+    const d=await r.json();
+    if(d.disabled)throw new Error("book upload needs an API key on the server ("+(d.why||"")+")");
+    if(!r.ok||!d.chapters)throw new Error(d.error?d.error.message:"the book could not be read");
+    topicNow=d.topic||d.title; $('topic').value=topicNow;
+    $('chat').innerHTML=""; qaHistory=[]; currentScene=-1;
+    scenes=d.chapters.map(prepScene);
+    renderSceneList(); renderTimeline();
+    chatMsg('sys',`&#128214; "${d.title}" — ${d.pages} pages read, `
+      +`${scenes.length} chapters`
+      +(d.ingested?`, ${d.ingested} of its procedures now in the hivemind — `
+        +`interrupt any time and the answer comes from the book`:''));
+    $('status').textContent="";$('status').className='status';
+    if(voiceOn)withVoices(()=>voiceNote(true));
+    await runLesson(0);
+  }catch(err){
+    $('status').textContent=err.message;$('status').className='status err';
+  }finally{$('bookBtn').disabled=false;}
+};
 
 /* ============ record to a video file for YouTube ============ */
 $('rec').onclick=()=>{
@@ -3514,10 +4336,37 @@ $('lang').onclick=e=>{
     :'&#9776; lesson language: English — start a new lesson to apply it');
   withVoices(()=>voiceNote(true));       /* which voice will actually speak */
 };
+/* Flip the house style mid-lesson. Nothing is regenerated and nothing is
+   refetched — the footage, the voice and the marker strokes are the same
+   three layers either way; only how the words are set changes, which is
+   exactly what makes the two comparable on one chapter. */
+function capStyleLabel(){
+  const b=$('capstyle'); if(!b)return;
+  if(!mptGraphics){b.disabled=true;b.textContent="Look: sketch";
+    b.setAttribute('aria-pressed','false');
+    b.title="MoneyPrinterTurbo's fonts did not load, so only the board's own "
+           +"hand is available"+(footageWhy?"":"");
+    return;}
+  b.disabled=false;
+  b.textContent=capStyle==="mpt"?"Look: MPT":"Look: sketch";
+  b.setAttribute('aria-pressed',capStyle==="mpt");
+}
+$('capstyle').onclick=()=>{
+  if(!mptGraphics)return;
+  capStyle=capStyle==="mpt"?"sketch":"mpt";
+  capStyleLabel();
+  /* re-enter the transition so the switch is visible immediately rather than
+     at the next chapter boundary */
+  if(capStyle==="mpt")mptTransStart();
+  chatMsg('sys','look switched to '+(capStyle==="mpt"
+    ?'MoneyPrinterTurbo — '+(MPTSUB.font||'')+', outlined, '+MPTSUB.position
+    :'the board&rsquo;s own hand'));
+};
 $('voice').onclick=e=>{voiceOn=!voiceOn;
   e.target.textContent=voiceOn?"Voice on":"Voice off";
   e.target.setAttribute('aria-pressed',voiceOn);
-  if(!voiceOn&&'speechSynthesis'in window){speechSynthesis.cancel();speaking=false;lipStop();}};
+  if(!voiceOn){if('speechSynthesis'in window)speechSynthesis.cancel();
+    ttsStop();speaking=false;lipStop();}};
 clearBoard();
 </script>
 </body>

@@ -2768,7 +2768,11 @@ function renderTimeline(){
 function seekTo(i){
   if(answering||!scenes.length)return;
   pendingSeek=i;
-  if(lessonRunning){resumeLesson();player.cancelRequested=true;}
+  /* cancel only a scene that is actually playing — set between scenes
+     (during a camera verify, say) the stale flag would skip the first
+     frame of whatever chapter plays next */
+  if(lessonRunning){resumeLesson();
+    if(player.active)player.cancelRequested=true;}
   else runLesson(i);
 }
 
@@ -3516,6 +3520,8 @@ function stopLesson(){
 async function runLesson(startAt=0){
   if(lessonRunning)return;
   lessonRunning=true; lessonAbort=false;
+  player.cancelRequested=false;   /* a stale cancel must not skip chapter 1 */
+  player.cancelRequested=false;   /* a stale cancel must not skip ch. 1 */
   setBadge('live'); $('pauseBtn').disabled=false;
   try{
     for(let i=startAt;i<scenes.length;i++){
@@ -3605,6 +3611,11 @@ async function startLesson(){
     $('status').className='status busy';
     chatMsg('sys','&#9632; stopped the lesson that was playing');
     await stopLesson();
+    if(lessonRunning){    /* parked in a camera prompt — do not stack two */
+      $('status').textContent="Could not stop the previous lesson — "
+        +"answer or dismiss the camera prompt, then press Start again";
+      $('status').className='status err'; return;
+    }
   }
   $('status').className='status';$('go').disabled=true;
   $('chat').innerHTML="";qaHistory=[];currentScene=-1;
@@ -4019,14 +4030,24 @@ $('tube').addEventListener('keydown',e=>{
    last poll — the new instruction is appended to the playing lesson as
    fresh chapters, and its procedures join the hivemind as they are said.
    The lesson keeps playing; the stream keeps teaching it. */
-const LIVE={on:false,url:"",timer:null,got:0};
+const LIVE={on:false,url:"",timer:null,got:0,cursor:null,gen:0};
 async function livePoll(first){
   if(!LIVE.on)return;
+  /* generation token: a poll that was in flight when the user pressed
+     Stop (or Stop+Follow) must land dead — without this a stale poll
+     appends the stream's chapters into whatever lesson came after, and a
+     quick re-follow leaves two 40s poll chains running forever */
+  const gen=LIVE.gen;
   try{
+    /* the cursor rides along so any server worker knows where we are —
+       without it a multi-worker deploy would re-mine the same tail */
     const r=await fetch("/api/live",{method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({url:LIVE.url,reset:!!first})});
+      body:JSON.stringify({url:LIVE.url,reset:!!first,
+        cursor:first?null:LIVE.cursor})});
     const d=await r.json();
+    if(!LIVE.on||gen!==LIVE.gen)return;
+    if(d&&typeof d.cursor==='number')LIVE.cursor=d.cursor;
     if(!r.ok)
       chatMsg('sys','live follow: '+(d.error?d.error.message:'failed')
              +' — still trying');
@@ -4051,18 +4072,27 @@ async function livePoll(first){
                +' more chapter(s) — resuming');
         runLesson(at);
       }else{
+        /* keep the chapters even if playback cannot start right now (an
+           answer in flight) — the server's cursor has already moved past
+           this slice, so dropping them would lose it for good */
+        scenes=d.chapters.map(prepScene);
+        renderSceneList(); renderTimeline();
         chatMsg('sys','&#9679; live: the stream\'s first '+d.chapters.length
-               +' chapter(s) are ready — playing');
-        playPreset(d.title||'live lesson',d.chapters);
+               +' chapter(s) are ready'+(answering?' — queued':' — playing'));
+        if(!answering){topicNow=d.title||'live lesson';
+          $('topic').value=topicNow; runLesson(0);}
       }
     }
   }catch(e){}
-  if(LIVE.on)LIVE.timer=setTimeout(()=>livePoll(false),40000);
+  if(LIVE.on&&gen===LIVE.gen)
+    LIVE.timer=setTimeout(()=>livePoll(false),40000);
 }
 function liveStop(){
-  LIVE.on=false; clearTimeout(LIVE.timer);
+  LIVE.on=false; LIVE.gen++; clearTimeout(LIVE.timer);
   $('liveBtn').textContent='Follow live';
   $('liveBtn').setAttribute('aria-pressed','false');
+  /* the warm verify camera was held for the stream — no stream, no hold */
+  if(!lessonRunning&&!VERIFY.busy)verifyRelease();
 }
 $('liveBtn').onclick=()=>{
   if(LIVE.on){liveStop();
@@ -4071,7 +4101,7 @@ $('liveBtn').onclick=()=>{
   const url=$('tube').value.trim();
   if(!url){chatMsg('sys','paste the livestream URL first, then Follow live');
     return;}
-  LIVE.on=true; LIVE.url=url; LIVE.got=0;
+  LIVE.on=true; LIVE.url=url; LIVE.got=0; LIVE.cursor=null; LIVE.gen++;
   $('liveBtn').textContent='Stop live';
   $('liveBtn').setAttribute('aria-pressed','true');
   chatMsg('sys','&#9679; following the livestream — new instruction becomes '
@@ -4716,6 +4746,96 @@ $('coach').onclick=()=>{COACH.on?coachStop():coachStart();};
    steps. Hit the pose and the lesson moves on; the tracking never leaves
    the tab. The camera and trackers start once and stay warm for the whole
    verified lesson. */
+/* ============ liquid neural network (LTC) ============
+   A real liquid time-constant network — Hasani et al. 2021 — implemented
+   dependency-free like every other model in this project. Per frame, the
+   measured joint-band deviations flow into a small continuous-time RNN
+   whose neurons' time constants DEPEND ON THE INPUT (the liquid property),
+   integrated with the paper's fused ODE solver:
+
+       f      = sigmoid(W x + U u + b)
+       x(t+dt)= (x + dt * f (.) A) / (1 + dt * (1/tau + f))
+
+   so the effective time constant tau/(1 + tau f) tightens when the input
+   is busy and relaxes when it is quiet. The recurrent core is fixed from a
+   seeded generator (same dynamics for everyone); the READOUT — which sees
+   [gain*x ; u], liquid state plus the direct-input skip connection, the
+   standard reservoir readout — is adapted online per student with a
+   cross-entropy gradient against the physics teacher signal and persisted
+   in the browser: the self-experimentation loop, learned not scripted.
+   liquidnet.py is the reference implementation, same maths, same seed.
+   The network never overrides the measured score: it carries the student
+   across tracker flicker and learns their signature; the angle-band
+   physics stays the judge. */
+const LNN={N:12,M:11,G:4,x:null,W:null,U:null,b:null,tau:null,A:null,
+           wo:null,bo:0,y:0,eta:0.02,seeded:false};
+function _lnnRng(seed){let a=seed>>>0;return function(){
+  a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function lnnInit(){
+  if(LNN.seeded)return;
+  const r=_lnnRng(0xC0FFEE), N=LNN.N, M=LNN.M;
+  const mat=(n,m,s)=>Array.from({length:n},
+    ()=>Array.from({length:m},()=>(r()*2-1)*s));
+  LNN.W=mat(N,N,0.9/Math.sqrt(N)); LNN.U=mat(N,M,1.4/Math.sqrt(M));
+  LNN.b=Array.from({length:N},()=>(r()*2-1)*0.3);
+  LNN.tau=Array.from({length:N},()=>0.3+r()*2.2);        /* 0.3 - 2.5 s */
+  LNN.A=Array.from({length:N},()=>r()*2-1);
+  LNN.x=new Array(N).fill(0);
+  LNN.wo=Array.from({length:N+M},()=>(r()*2-1)*0.1); LNN.bo=0;
+  try{                                /* the per-student readout, earned */
+    const s=JSON.parse(localStorage.getItem('tutor_lnn_v2')||'null');
+    if(s&&Array.isArray(s.wo)&&s.wo.length===N+M
+       &&s.wo.every(Number.isFinite))
+      {LNN.wo=s.wo;LNN.bo=Number.isFinite(+s.bo)?+s.bo:0;}
+  }catch(_){}
+  LNN.seeded=true;
+}
+function lnnSave(){
+  try{localStorage.setItem('tutor_lnn_v2',
+    JSON.stringify({wo:LNN.wo,bo:LNN.bo}));}catch(_){}
+}
+function lnnReset(){lnnInit();LNN.x.fill(0);LNN.y=0;}
+const _lnnSig=v=>1/(1+Math.exp(-v));
+function lnnStep(u,dt,teach){
+  lnnInit();
+  dt=Math.min(Math.max(dt,0.005),0.1);
+  const N=LNN.N,x=LNN.x,f=new Array(N);
+  for(let i=0;i<N;i++){
+    let a=LNN.b[i];
+    for(let j=0;j<N;j++)a+=LNN.W[i][j]*x[j];
+    for(let k=0;k<LNN.M&&k<u.length;k++)a+=LNN.U[i][k]*u[k];
+    f[i]=_lnnSig(a);
+  }
+  for(let i=0;i<N;i++)                     /* the fused ODE solver step */
+    x[i]=(x[i]+dt*f[i]*LNN.A[i])/(1+dt*(1/LNN.tau[i]+f[i]));
+  /* readout over [gain*x ; u] — the skip connection makes the mapping
+     learnable immediately; the state contributes the temporal judgement */
+  const z=new Array(N+LNN.M);
+  for(let i=0;i<N;i++)z[i]=LNN.G*x[i];
+  for(let k=0;k<LNN.M;k++)z[N+k]=k<u.length?u[k]:0;
+  let o=LNN.bo; for(let i=0;i<z.length;i++)o+=LNN.wo[i]*z[i];
+  const y=_lnnSig(o); LNN.y=y;
+  if(teach!=null){
+    /* online adaptation — cross-entropy gradient, which does not vanish
+       when the readout is confidently wrong (delta rule saturates) */
+    const g=LNN.eta*(teach-y);
+    for(let i=0;i<z.length;i++)LNN.wo[i]+=g*z[i];
+    LNN.bo+=g;
+  }
+  return y;
+}
+function lnnInputs(deltas,score,seen){
+  const ms=(COACH.spec&&COACH.spec.measures)||[];
+  const u=new Array(LNN.M).fill(0);
+  for(let i=0;i<9&&i<ms.length;i++){
+    const d=deltas&&deltas[ms[i]];
+    u[i]=d==null?0:Math.min(1,Math.abs(d)/45);
+  }
+  u[9]=(score||0)/100; u[10]=seen?1:0;
+  return u;
+}
+
 const VERIFY={on:false,strict:false,active:false,busy:false,
   cam:null,video:null,pose:null,hander:null,
   ref:null,steps:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
@@ -4823,7 +4943,11 @@ async function verifyChapter(sc){
     const d=await r.json();
     if(!r.ok||!d.reference)
       throw new Error((d.error&&d.error.message)||"no reference");
+    /* the lesson may have been stopped while we were waiting — a parked
+       verify must not hold a dead lesson's slot open forever */
+    if(lessonAbort)throw new Error("lesson stopped");
     await verifyCamera();
+    if(lessonAbort)throw new Error("lesson stopped");
     /* borrow the coach's scoring seat so the SAME definitions grade this —
        coaching and a lesson never run at the same time, so it is free */
     COACH.spec=d.reference; COACH.ref=d.reference;
@@ -4831,6 +4955,7 @@ async function verifyChapter(sc){
     VERIFY.hold=0; VERIFY.lastVT=-1; VERIFY.live=null; VERIFY.lm=null;
     VERIFY.score=0; VERIFY.cues=[]; VERIFY.round=0;
     VERIFY.per=steps.map(()=>({best:0,ok:false,rounds:0}));
+    lnnReset();               /* fresh liquid state, same earned readout */
     VERIFY.lastT=VERIFY.stepT0=performance.now();
     captionText="Your turn — "+steps[0]; captionQA=false;
     if(voiceOn)speak("Your turn. "+steps[0]
@@ -4855,7 +4980,9 @@ async function verifyChapter(sc){
   }catch(e){
     chatMsg('sys','&#9888; camera verify skipped — '+(e&&e.message||e));
     VERIFY.active=false; VERIFY.done=null;
-  }finally{VERIFY.busy=false;}
+    /* a denied camera left "asking for your camera" on screen forever */
+    $('status').textContent="";$('status').className='status';
+  }finally{VERIFY.busy=false; lnnSave();}
 }
 function verifyNext(hit){
   const per=VERIFY.per, key=VERIFY.steps[VERIFY.si]||'';
@@ -4892,9 +5019,18 @@ function verifyTick(now){
       VERIFY.ref.steps[Math.min(VERIFY.si,VERIFY.ref.steps.length-1)]);
     VERIFY.score=s.score; VERIFY.cues=s.cues||[];
     VERIFY.per[VERIFY.si].best=Math.max(VERIFY.per[VERIFY.si].best,s.score);
-    if(s.score>=verifyNeed()){VERIFY.hold+=now-VERIFY.lastT;
+    const landing=s.score>=verifyNeed();
+    /* the liquid network watches the same frames, taught by the physics */
+    const conf=lnnStep(lnnInputs(s.deltas,s.score,true),
+                       (now-VERIFY.lastT)/1000,landing?1:0);
+    if(landing){VERIFY.hold+=now-VERIFY.lastT;
       if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
-    }else VERIFY.hold=0;
+    }else if(conf<0.6)VERIFY.hold=0;
+    /* conf >= 0.6: the liquid state bridges a flicker — one bad tracker
+       frame no longer zeroes a nearly-held pose; the hold is kept, not
+       grown, so the pass still requires real held frames */
+  }else if(VERIFY.si<VERIFY.steps.length){
+    lnnStep(lnnInputs(null,0,false),(now-VERIFY.lastT)/1000,null);
   }
   if(VERIFY.si<VERIFY.steps.length&&now-VERIFY.stepT0>VERIFY_STEP_MS){
     /* strict coaching gates progression: the lesson proceeds ONLY when the
@@ -4956,6 +5092,12 @@ function verifyRender(now){
     ctx.fillStyle=p.ok?'#1F9E7A'
       :(i===VERIFY.si?'#E0A32E':'rgba(253,253,248,.35)');
     ctx.beginPath();ctx.arc(30+i*26,h-24,8,0,7);ctx.fill();});
+  /* the liquid network's confidence, live */
+  ctx.fillStyle='rgba(253,253,248,.22)';ctx.fillRect(18,h-52,120,8);
+  ctx.fillStyle=LNN.y>=0.6?'#1F9E7A':'#7A5AD6';
+  ctx.fillRect(18,h-52,Math.round(120*Math.max(0,Math.min(1,LNN.y))),8);
+  ctx.font='11px "IBM Plex Mono",monospace';ctx.fillStyle='#FDFDF8';
+  ctx.fillText('liquid '+LNN.y.toFixed(2),144,h-45);
 }
 $('verifyBtn').onclick=()=>{
   /* mid-run the button is the escape hatch: skip THIS step, keep the mode —
@@ -4989,7 +5131,7 @@ $('mirrorBtn').onclick=e=>{
   COACH.spokeText=""; COACH.cueText="";
 };
 /* the camera is not left running because somebody closed the tab */
-addEventListener('pagehide',coachRelease);
+addEventListener('pagehide',()=>{coachRelease();verifyRelease();});
 
 /* ?preset=world|both|fix|move|curve|anim|learn — deep-link into a preset,
    so a demo is one URL rather than one URL plus a click. */

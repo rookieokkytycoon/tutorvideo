@@ -894,7 +894,8 @@ def siliconflow_tts(
                 f"start siliconflow tts, model: {model}, voice: {voice}, try: {i + 1}"
             )
 
-            response = requests.post(url, json=payload, headers=headers)
+            response = requests.post(url, json=payload, headers=headers,
+                                     timeout=(15, 120))
 
             if response.status_code == 200:
                 # 保存音频文件

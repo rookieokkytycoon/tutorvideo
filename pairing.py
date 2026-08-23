@@ -125,8 +125,25 @@ def extract_pair(header, body, claude_key, model=None, provider=None):
         if provider == "deepseek":
             raw = _deepseek(openclaw.MINE_SYS, f"{header}\n\n{body}")
             b = openclaw._loads(raw)
-            b["steps"] = [s for s in (b.get("steps") or [])
-                          if isinstance(s, dict)]
+            # normalize to the same step shape _extract guarantees —
+            # downstream (doc_to_lesson, hivemind_doc) indexes these keys
+            # directly, and a DeepSeek-only doc used to KeyError there
+            steps = []
+            for s in (b.get("steps") or []):
+                if not isinstance(s, dict) or not str(s.get("text", "")).strip():
+                    continue
+                text = str(s.get("text", "")).strip()[:300]
+                steps.append({
+                    "text": text,
+                    "narration": str(s.get("narration") or text)[:400],
+                    "modality": s.get("modality")
+                    if s.get("modality") in ("hand", "body", "both") else "hand",
+                    "at": str(s.get("at") or "")[:16],
+                    "hand_actions": [str(a)[:120] for a in
+                                     (s.get("hand_actions") or [text])][:5],
+                    "body_actions": [str(a)[:120] for a in
+                                     (s.get("body_actions") or [])][:5]})
+            b["steps"] = steps
         else:
             # same source, stronger model, adversarial reader prompt
             b = openclaw._extract(claude_key, header, body, PAIR_B_MODEL,

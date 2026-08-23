@@ -7,7 +7,9 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT server:app
+    # --timeout 600: /api/book and /api/mine hold a worker for minutes of
+    # LLM calls; gunicorn's default 30s would kill them mid-request
+    startCommand: gunicorn -w 2 --timeout 600 -b 0.0.0.0:$PORT server:app
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false          # Render will ask you to paste it (kept secret)

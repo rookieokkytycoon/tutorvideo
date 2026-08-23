@@ -937,13 +937,32 @@ class Hivemind:
                 "pending_corrections": pending}
 
     def save(self, path: str | None = None):
+        # atomic: write beside, then replace — a killed worker or two
+        # workers racing can no longer leave half a JSON file on disk,
+        # which used to crash-loop every later boot
         path = path or self.path
-        with open(path, "w") as f:
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "w") as f:
             json.dump(json_graph.node_link_data(self.g, edges="links"), f)
+        os.replace(tmp, path)
 
     def load(self, path: str):
-        with open(path) as f:
-            self.g = json_graph.node_link_graph(json.load(f), edges="links")
+        # tolerant: a corrupt graph file (pre-atomic-write deployments can
+        # have one) is quarantined, not fatal — the app boots with a fresh
+        # graph and the bad file is kept beside it for inspection
+        try:
+            with open(path) as f:
+                self.g = json_graph.node_link_graph(json.load(f),
+                                                    edges="links")
+        except (ValueError, KeyError) as e:
+            corrupt = f"{path}.corrupt"
+            try:
+                os.replace(path, corrupt)
+            except OSError:
+                pass
+            print(f"[hivemind] {path} unreadable ({e}) — moved to "
+                  f"{corrupt}, starting with an empty graph")
+            self.g = nx.DiGraph()
         self._idf = None          # a loaded corpus needs its own IDF table
 
 

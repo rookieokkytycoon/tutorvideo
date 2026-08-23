@@ -677,6 +677,8 @@ def _reel_state(job, **kw):
     except (OSError, ValueError):
         state = {}
     state.update(kw)
+    if kw:                       # every write stamps its time, so a job
+        state["at"] = time.time()   # orphaned by a killed worker looks old
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(state, fh)
@@ -1080,8 +1082,13 @@ def reel_start():
                                   "cutting the shots to the narration",
                                   "encoding the cut",
                                   "burning subtitles, muxing the voice"):
-        # the same chapter prefetched twice must not spawn a second ffmpeg
-        return jsonify({"job": job, "poll": f"/api/reel/status?job={job}"})
+        # the same chapter prefetched twice must not spawn a second ffmpeg —
+        # but an in-progress state that has not been touched for 15 minutes
+        # is a worker that died mid-render (deploy, hard kill): the job id
+        # is deterministic, so without this check that chapter's reel would
+        # be wedged forever. Fall through and restart it instead.
+        if time.time() - float(state_now.get("at") or 0) < 900:
+            return jsonify({"job": job, "poll": f"/api/reel/status?job={job}"})
     _reel_state(job, state="queued", pct=0, error=None, video=None)
     threading.Thread(target=_reel_run, daemon=True,
                      args=(job, actions, voice, source)).start()
@@ -2277,14 +2284,25 @@ def live_follow():
         return jsonify({"error": {"message": "url required"}}), 400
     try:
         vid, title, rows = openclaw.fetch_transcript(url)
-    except openclaw.MineError as e:
-        # a stream whose captions have not started yet is "not yet", not "no"
+    except (openclaw.MineError, requests.RequestException) as e:
+        # a stream whose captions have not started yet — or a transient
+        # network hiccup on a poll loop — is "not yet", never a 500
         return jsonify({"waiting": True, "buffered": 0,
                         "note": f"no transcript yet ({e})"}), 200
     key = vid or url
     if p.get("reset"):
         LIVE_CURSORS.pop(key, None)
+    # The client echoes back the cursor it last received, which makes the
+    # endpoint effectively stateless: under gunicorn -w 2 each worker has
+    # its own LIVE_CURSORS, and without the echo a poll landing on the
+    # other worker would re-mine (and re-bill) the same tail. The higher
+    # of the two wins; "reset" trusts the client's explicit restart.
+    client_cur = p.get("cursor")
     cur = float(LIVE_CURSORS.get(key, 0.0))
+    if isinstance(client_cur, (int, float)) and not p.get("reset"):
+        cur = max(cur, float(client_cur))
+    if len(LIVE_CURSORS) > 200:              # never grows without bound
+        LIVE_CURSORS.pop(next(iter(LIVE_CURSORS)))
     # rows are (start_seconds, text) tuples — see openclaw.fetch_transcript
     fresh = [(float(s), str(t)) for s, t in rows if float(s) >= cur]
     end = max((s for s, _ in fresh), default=cur)

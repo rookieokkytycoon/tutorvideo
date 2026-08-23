@@ -228,7 +228,7 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
       <button class="big ghost" id="mirrorBtn" aria-pressed="true"
               title="You are facing the demonstration, so copying it with the opposite arm is the natural thing to do. Mirror accepts that; turn it off to be graded on the same side the rig uses.">Mirror: on</button>
       <button class="big ghost" id="verifyBtn" aria-pressed="false"
-              title="Verify each step through your camera as the lesson plays: after every whole-body chapter (a book exercise, a livestream step), the lesson pauses, you perform it, MediaPipe tracks your joints against that chapter's own steps, and the lesson moves on when you hit the pose — your turn, every chapter, nothing uploaded.">Verify: off</button>
+              title="Verify each step through your camera as the lesson plays: after every whole-body chapter (a book exercise, a livestream step), the lesson pauses, you perform it, MediaPipe tracks your joints against that chapter's own steps, and the lesson moves on when you hit the pose. Click again for COACH-VERIFY: the lesson proceeds only when the action actually lands — missed rounds get a spoken correction grounded in the book, and the pass band adapts to you as you practice. Nothing uploaded.">Verify: off</button>
     </div>
     <label>Teach from a book — upload a PDF and it becomes the lesson</label>
     <div class="row">
@@ -3573,7 +3573,20 @@ async function runLesson(startAt=0){
   }
   lessonRunning=false; player.active=false;
   setBadge(LIVE.on?'live':'');   /* a followed stream keeps the session live */
-  if(!LIVE.on)verifyRelease();   /* holding live keeps the camera warm */
+  if(!LIVE.on){
+    verifyRelease();             /* holding live keeps the camera warm */
+    /* the session's self-experiment, reported: which actions the student
+       hit clean and which ones the band had to adapt around */
+    if(VERIFY.log.length){
+      const tough=VERIFY.log.filter(l=>l.rounds>0);
+      chatMsg('sys','&#9673; session experiment: '+VERIFY.log.length
+        +' action(s) camera-verified'
+        +(tough.length?' — the pass band adapted for '
+          +tough.map(l=>'"'+l.title+'" ('+l.rounds+' coached round'
+            +(l.rounds>1?'s':'')+')').join(', '):' — all hit clean'));
+      VERIFY.log.length=0;
+    }
+  }
   if(lessonAbort){lessonAbort=false;return;}      /* something else is starting */
   if(pendingSeek!=null){const s=pendingSeek;pendingSeek=null;runLesson(s);return;}
   if(LIVE.on)chatMsg('sys','&#9679; holding live — the lesson resumes when '
@@ -4703,10 +4716,64 @@ $('coach').onclick=()=>{COACH.on?coachStop():coachStart();};
    steps. Hit the pose and the lesson moves on; the tracking never leaves
    the tab. The camera and trackers start once and stay warm for the whole
    verified lesson. */
-const VERIFY={on:false,active:false,busy:false,
+const VERIFY={on:false,strict:false,active:false,busy:false,
   cam:null,video:null,pose:null,hander:null,
   ref:null,steps:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
-  live:null,lm:null,score:0,cues:[],per:[],done:null};
+  live:null,lm:null,score:0,cues:[],per:[],done:null,round:0,log:[]};
+/* The adaptive part, in the spirit of liquid networks: the pass threshold
+   per action is a parameter that keeps adapting to THIS student while they
+   practice. Every failed round eases the band a little (floor 60, so it
+   never stops meaning anything); a clean first-round pass tightens it back.
+   The map persists for the session, so an action met again — the book
+   repeats it, the stream drills it — starts from what the student earned. */
+const VERIFY_ADAPT=new Map();
+function verifyNeed(){
+  const base=(VERIFY.ref&&VERIFY.ref.pass)||78;
+  const key=VERIFY.steps[VERIFY.si]||'';
+  return Math.max(60,base-(VERIFY_ADAPT.get(key)||0)-VERIFY.round*4);
+}
+function verifyEscalate(now){
+  /* strict coaching: a timed-out round does NOT move on — it eases the
+     band, resets the clock and sends the tracked faults to the coach */
+  VERIFY.round++; VERIFY.stepT0=now; VERIFY.hold=0;
+  const key=VERIFY.steps[VERIFY.si]||'';
+  VERIFY_ADAPT.set(key,Math.min(12,(VERIFY_ADAPT.get(key)||0)+3));
+  verifyCoachHint(key);
+}
+let _verifyHinting=false;
+async function verifyCoachHint(step){
+  /* the agentic coach: the model sees the step and the student's actual
+     tracked faults, grounded in what the book/hivemind says about this
+     exact action, and speaks ONE concrete correction */
+  if(_verifyHinting)return; _verifyHinting=true;
+  try{
+    const cues=(VERIFY.cues||[])
+      .map(c=>c.label+': '+c.text+' by '+c.off+' deg').join('; ');
+    let ground='';
+    try{
+      const g=await fetch('/api/graph',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({question:step})}).then(r=>r.json());
+      ground=(g&&g.context)||'';
+    }catch(_){}
+    const fix=await askClaude(
+      'You are a live physical coach. A student cannot hit a movement step; '
+      +'their camera is tracked joint by joint and the faults below are '
+      +'measured, not guessed. In 1-2 short spoken sentences give the single '
+      +'most useful correction, concrete and encouraging. If source material '
+      +'is provided, prefer ITS cues and wording. Plain text only.',
+      'Step: '+step
+      +'\nTracked faults: '+(cues||'body not fully in view — likely framing')
+      +'\nFailed rounds so far: '+VERIFY.round
+      +(ground?'\n\nSource material:\n'+ground.slice(0,1500):''),[],200);
+    if(fix&&VERIFY.active){
+      const t=String(fix).trim().slice(0,220);
+      captionText=t; if(voiceOn)speak(t);
+      chatMsg('tutor',t);
+    }
+  }catch(_){}
+  finally{_verifyHinting=false;}
+}
 const VERIFY_BONES=[["shoulder_l","shoulder_r"],["hip_l","hip_r"],
   ["shoulder_l","hip_l"],["shoulder_r","hip_r"],
   ["shoulder_l","elbow_l"],["elbow_l","wrist_l"],
@@ -4762,8 +4829,8 @@ async function verifyChapter(sc){
     COACH.spec=d.reference; COACH.ref=d.reference;
     VERIFY.ref=d.reference; VERIFY.steps=steps; VERIFY.si=0;
     VERIFY.hold=0; VERIFY.lastVT=-1; VERIFY.live=null; VERIFY.lm=null;
-    VERIFY.score=0; VERIFY.cues=[];
-    VERIFY.per=steps.map(()=>({best:0,ok:false}));
+    VERIFY.score=0; VERIFY.cues=[]; VERIFY.round=0;
+    VERIFY.per=steps.map(()=>({best:0,ok:false,rounds:0}));
     VERIFY.lastT=VERIFY.stepT0=performance.now();
     captionText="Your turn — "+steps[0]; captionQA=false;
     if(voiceOn)speak("Your turn. "+steps[0]
@@ -4774,11 +4841,16 @@ async function verifyChapter(sc){
     setBadge('live'); captionText="";
     const hit=out.per.filter(p=>p.ok).length;
     const best=out.per.reduce((m,p)=>Math.max(m,p.best),0);
+    const extra=out.per.reduce((m,p)=>m+(p.rounds||0),0);
+    VERIFY.log.push({title:sceneName(sc),hit:hit,of:out.per.length,
+                     best:best,rounds:extra});
     chatMsg(hit===out.per.length?'tutor':'sys',
       (hit===out.per.length
         ?'&#10003; verified through the camera — '
         :'&#9678; camera check: ')
       +hit+'/'+out.per.length+' step(s) hit, best score '+best
+      +(extra?', '+extra+' coached round'+(extra>1?'s':'')
+        +' — the pass band adapted to you':'')
       +(hit===out.per.length?'':' — moving on; ask and it will re-explain'));
   }catch(e){
     chatMsg('sys','&#9888; camera verify skipped — '+(e&&e.message||e));
@@ -4786,8 +4858,14 @@ async function verifyChapter(sc){
   }finally{VERIFY.busy=false;}
 }
 function verifyNext(hit){
-  const per=VERIFY.per;
+  const per=VERIFY.per, key=VERIFY.steps[VERIFY.si]||'';
   per[VERIFY.si].ok=per[VERIFY.si].ok||hit;
+  per[VERIFY.si].rounds=VERIFY.round;
+  /* a clean first-round pass earns the band back — adaptation flows both
+     ways, or it would only ever get easier */
+  if(hit&&VERIFY.round===0)
+    VERIFY_ADAPT.set(key,Math.max(0,(VERIFY_ADAPT.get(key)||0)-2));
+  VERIFY.round=0;
   VERIFY.si++; VERIFY.hold=0; VERIFY.stepT0=performance.now();
   if(VERIFY.si>=VERIFY.steps.length){
     if(VERIFY.done)VERIFY.done({per:per});
@@ -4814,12 +4892,17 @@ function verifyTick(now){
       VERIFY.ref.steps[Math.min(VERIFY.si,VERIFY.ref.steps.length-1)]);
     VERIFY.score=s.score; VERIFY.cues=s.cues||[];
     VERIFY.per[VERIFY.si].best=Math.max(VERIFY.per[VERIFY.si].best,s.score);
-    if(s.ok){VERIFY.hold+=now-VERIFY.lastT;
+    if(s.score>=verifyNeed()){VERIFY.hold+=now-VERIFY.lastT;
       if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
     }else VERIFY.hold=0;
   }
-  if(VERIFY.si<VERIFY.steps.length&&now-VERIFY.stepT0>VERIFY_STEP_MS)
-    verifyNext(false);
+  if(VERIFY.si<VERIFY.steps.length&&now-VERIFY.stepT0>VERIFY_STEP_MS){
+    /* strict coaching gates progression: the lesson proceeds ONLY when the
+       required action has actually been performed — a timeout coaches and
+       retries instead of waving the student through */
+    if(VERIFY.strict)verifyEscalate(now);
+    else verifyNext(false);
+  }
   VERIFY.lastT=now;
 }
 function verifyRender(now){
@@ -4863,7 +4946,8 @@ function verifyRender(now){
   ctx.fillText(String(VERIFY.score),18,54);
   ctx.font='13px "IBM Plex Mono",monospace';ctx.fillStyle='#FDFDF8';
   ctx.fillText('step '+Math.min(VERIFY.si+1,VERIFY.steps.length)+'/'
-    +VERIFY.steps.length
+    +VERIFY.steps.length+'   need '+verifyNeed()
+    +(VERIFY.round?'   round '+(VERIFY.round+1):'')
     +(VERIFY.lm?'':'   -   step back, no body in view'),18,76);
   (VERIFY.cues||[]).slice(0,2).forEach((c,i)=>{
     ctx.fillStyle='#E0A32E';
@@ -4874,14 +4958,28 @@ function verifyRender(now){
     ctx.beginPath();ctx.arc(30+i*26,h-24,8,0,7);ctx.fill();});
 }
 $('verifyBtn').onclick=()=>{
-  VERIFY.on=!VERIFY.on;
-  $('verifyBtn').textContent='Verify: '+(VERIFY.on?'on':'off');
+  /* mid-run the button is the escape hatch: skip THIS step, keep the mode —
+     strict coaching must gate the lesson, not imprison the student */
+  if(VERIFY.active){verifyNext(false);
+    chatMsg('sys','step skipped by hand');return;}
+  /* off -> verify -> coach (strict) -> off */
+  if(!VERIFY.on){VERIFY.on=true;VERIFY.strict=false;}
+  else if(!VERIFY.strict){VERIFY.strict=true;}
+  else{VERIFY.on=false;VERIFY.strict=false;}
+  $('verifyBtn').textContent=!VERIFY.on?'Verify: off'
+    :VERIFY.strict?'Coach-verify':'Verify: on';
   $('verifyBtn').setAttribute('aria-pressed',String(VERIFY.on));
-  chatMsg('sys',VERIFY.on
-    ?'&#9673; verify on — after each whole-body chapter the camera watches '
+  chatMsg('sys',!VERIFY.on?'verify off'
+    :VERIFY.strict
+    ?'&#9673; COACH-VERIFY — the lesson proceeds ONLY when each required '
+      +'action is actually performed on camera. A missed round is coached: '
+      +'the tracked faults go to the tutor, it answers from the book, and '
+      +'the pass band adapts to you round by round. The button becomes '
+      +'"skip step" while a check is running.'
+    :'&#9673; verify on — after each whole-body chapter the camera watches '
       +'YOU perform its steps, tracked joint by joint against that '
-      +'chapter\'s own reference. Nothing leaves this tab.'
-    :'verify off');
+      +'chapter\'s own reference. Nothing leaves this tab. Click again for '
+      +'strict coach-verify, which will not move on until the action lands.');
   if(!VERIFY.on&&!VERIFY.busy)verifyRelease();
 };
 $('mirrorBtn').onclick=e=>{

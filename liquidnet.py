@@ -105,9 +105,21 @@ class LTC:
         # coach EARLY instead of waiting out the timeout.
         self.wp = [(r() * 2 - 1) * 0.1 for _ in range(n + m)]
         self.bp = 0.0
+        # the fourth readout: DETAIL NEED — "does THIS student need finer-
+        # grained instruction?" Taught by replaying each resolved round's
+        # trajectory against whether it took coached rounds to land
+        # (teach_need), and distilled into a slow per-student trait
+        # (self.need) that the page's interrupt path APPLIES: it sizes the
+        # steps of every generated answer chapter, on any topic. The
+        # self-experimentation loop reaching out of the camera and into
+        # the explanations themselves.
+        self.wd = [(r() * 2 - 1) * 0.1 for _ in range(n + m)]
+        self.bd = 0.0
         self.y = 0.0
         self.y_eng = 0.0
         self.y_pred = 0.0
+        self.y_need = 0.0
+        self.need = 0.5               # the trait: slow EMA of y_need
         self.z = [0.0] * (n + m)      # the last feature vector, replayable
 
     def reset(self):
@@ -115,6 +127,8 @@ class LTC:
         self.y = 0.0
         self.y_eng = 0.0
         self.y_pred = 0.0
+        self.y_need = 0.0
+        # self.need survives on purpose — it is a TRAIT, not a state
 
     def _features(self, u):
         """The readout's view: [gain*x ; u] — state plus skip connection."""
@@ -139,6 +153,10 @@ class LTC:
         self.y = _sig(self.bo + sum(w * v for w, v in zip(self.wo, z)))
         self.y_eng = _sig(self.be + sum(w * v for w, v in zip(self.we, z)))
         self.y_pred = _sig(self.bp + sum(w * v for w, v in zip(self.wp, z)))
+        self.y_need = _sig(self.bd + sum(w * v for w, v in zip(self.wd, z)))
+        # the trait distils slowly from the per-frame readout — a few
+        # seconds of struggle should not rewrite who the student is
+        self.need = 0.98 * self.need + 0.02 * self.y_need
         if teach is not None:
             # online readout adaptation — cross-entropy gradient, which
             # does not vanish when the readout is confidently wrong (the
@@ -162,6 +180,16 @@ class LTC:
             g = self.eta * (label - p)
             self.wp = [w + g * v for w, v in zip(self.wp, z)]
             self.bp += g
+
+    def teach_need(self, zs, label):
+        """Same replay discipline for the DETAIL-NEED readout: label 1
+        when the round needed coaching to land (or never landed), 0 on a
+        clean first-round hit."""
+        for z in zs:
+            p = _sig(self.bd + sum(w * v for w, v in zip(self.wd, z)))
+            g = self.eta * (label - p)
+            self.wd = [w + g * v for w, v in zip(self.wd, z)]
+            self.bd += g
 
     def tau_effective(self, u):
         """The liquid property, measurable: tau/(1 + tau*f) per neuron."""
@@ -236,6 +264,8 @@ def _self_test():
             zs.append(list(net_.z))
         if teach:
             net_.teach_outcome(zs, 1.0 if kind == "approach" else 0.0)
+            # a clean approach needed no coaching (0); a stuck round did (1)
+            net_.teach_need(zs, 0.0 if kind == "approach" else 1.0)
     for _ in range(60):
         round_(net, "approach")
         round_(net, "stuck")
@@ -244,6 +274,21 @@ def _self_test():
     round_(net, "stuck", frames=30, teach=False)
     p_miss = net.y_pred
     assert p_hit > 0.65 and p_miss < 0.35, (p_hit, p_miss)
+
+    # 3c. the detail-need readout separates the same regimes with inverse
+    # labels, mid-round — and the slow trait drifts UP through a run of
+    # coached rounds, which is what sizes the page's answer chapters.
+    round_(net, "stuck", frames=30, teach=False)
+    n_stuck = net.y_need
+    round_(net, "approach", frames=30, teach=False)
+    n_clean = net.y_need
+    assert n_stuck > 0.65 and n_clean < 0.35, (n_stuck, n_clean)
+    before = net.need
+    for _ in range(20):
+        round_(net, "stuck", frames=30, teach=False)
+    assert net.need > before, (before, net.need)
+    after_need = net.need     # snapshot NOW — section 4's clean frames
+    #                           will (correctly) pull the trait back down
 
     # 4. flicker robustness: confidence coasts through a two-frame tracker
     # dropout instead of collapsing — the whole reason the loop wants a
@@ -260,6 +305,8 @@ def _self_test():
           f"split good={y_good:.2f}/bad={y_bad:.2f}, "
           f"engagement {e_good:.2f}/{e_bad:.2f}/gone {e_gone:.2f}, "
           f"outcome mid-round hit={p_hit:.2f}/miss={p_miss:.2f}, "
+          f"detail-need stuck={n_stuck:.2f}/clean={n_clean:.2f} "
+          f"(trait {before:.2f}->{after_need:.2f}), "
           f"state bounded, flicker bridged at y={net.y:.2f}")
 
 

@@ -441,7 +441,7 @@ Respond in exactly this format:
 Then OPTIONALLY exactly one of:
 <strokes>1-3 annotation strokes placed ON the existing animation — a circle around a part, an arrow at it, an underline, at the parts' grid locations. Same stroke format with <id> labels.</strokes>
 <new_scene>{"narration":"1-2 spoken sentences","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[ ... ]}]}</new_scene>
-PREFER <new_scene> — a FULL animated chapter, played immediately as the answer — for any question that asks how, why, "show me", "what happens if", or whose answer involves a movement, a mechanism, a structure or a place. Words plus a marker stroke are the answer only for a quick factual clarification ("what's that called?", "how many?"). A student who interrupts deserves to be SHOWN, not told.
+A <new_scene> — a FULL animated chapter, played immediately as the answer — is REQUIRED for any question that asks how, why, "show me", "what happens if", "full steps", or whose answer involves a movement, a mechanism, a structure, a process or a place. Words plus a marker stroke are the whole answer only for a quick factual clarification ("what's that called?", "how many?") — and even then a new_scene is welcome. A student who interrupts deserves to be SHOWN, not told: when in doubt, build the chapter.
 RECOGNIZE THE FORMAT of the question and pick the chapter mode to match it:
 - a physical procedure -> "actions" (real film per action);
 - finger technique -> "hand"; a whole-body movement or posture -> "skeleton" (with "muscles" when it is an exercise);
@@ -459,7 +459,53 @@ ${ANIM_LANG}
 You may ALSO answer by putting REAL FILM on the board and marking it up:
 <footage>bicycle chain sprocket</footage>
 2-5 words naming a filmable object or action — a stock-library search, not a shot description. The clip replaces the backdrop and YOUR STROKES ARE DRAWN ON TOP OF IT, so the honest answer to "what does that actually look like" or "show me the real thing" is film with a circle around the part in question. Use it together with <answer> and <strokes>: the footage shows it, the strokes point at it, the words explain it. It costs nothing and arrives in seconds. Do not use it for an abstraction that was never filmed.
-Use <strokes> to point at what is already on screen. Omit both if words alone answer it. Never leave the grid.`;
+Use <strokes> to point at what is already on screen. Omit both if words alone answer it. Never leave the grid.
+The question may be UNRELATED to the current lesson topic. That changes nothing: answer it fully and teach it from scratch with its own new_scene — there is no such thing as off-topic, and you never refuse or defer an interrupt.`;
+
+/* the liquid network's applied hand in every ANSWER: the detail-need trait
+   (fourth readout, earned from the student's own camera practice) sizes the
+   steps of every generated chapter — finer for a student who needs coached
+   rounds, leaner for one who hits clean. General purpose by construction:
+   the trait is about the STUDENT, not the topic, so it applies to any
+   question, related to the lesson or not. */
+function lnnDetailHint(){
+  try{lnnInit();}catch(_){return '';}
+  const n=LNN.need;
+  return n>0.6
+    ?'TRACKED PRACTICE (liquid network, this student): they tend to need '
+     +'coached rounds before a step lands — write MORE and FINER steps '
+     +'(5-7, one small explicit action each, nothing implied).'
+    :n<0.4
+    ?'TRACKED PRACTICE (liquid network, this student): they hit steps '
+     +'clean on the first try — 3-5 efficient steps are enough.'
+    :'TRACKED PRACTICE: no strong signal on this student yet — 4-6 clear '
+     +'steps.';
+}
+const QA_STEPS_SYS=`You convert a tutor's SPOKEN answer into ONE complete animated chapter, returned as STRICT JSON only — no prose, no markdown fence, no XML tags.
+RECOGNIZE THE FORMAT of the question and pick the mode:
+- a physical procedure -> {"mode":"actions","actions":[{"text":"one short imperative","footage":"2-5 words of filmable action"}, ...]}
+- finger technique -> {"mode":"hand","hand_steps":["...", ...]}
+- a whole-body movement or exercise -> {"mode":"skeleton","motion_steps":["...", ...]} plus "muscles":["quads",...] when it is an exercise
+- body AND fingers together -> {"mode":"compose","parts":[{"kind":"skeleton","title":"posture","steps":[...]},{"kind":"hand","title":"grip","steps":[...]}]}
+- where things are relative to each other -> {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]}
+- an abstract mechanism, fact or comparison -> {"mode":"anim","steps":[{"beat":"one spoken beat","els":[...]},...]}
+ALWAYS include "narration" (2-3 spoken sentences that TEACH it), "title" (short noun phrase) and "seconds" (8-18).
+The steps are the FULL STEPS of the how-to: every action, one short physically performable imperative each, nothing skipped and nothing implied. The question may be UNRELATED to any current lesson — teach it from scratch anyway; there is no such thing as off-topic.`;
+async function qaFullSteps(q,answer){
+  /* the second chance the answer is OWED: when the tutor's reply carried
+     no playable chapter (or a malformed one), this call builds the full-
+     steps animation from the reply itself — format recognized by the
+     model, step granularity set by the liquid network's detail-need trait */
+  try{
+    const raw=await askClaude(QA_STEPS_SYS+langRule(),
+      'Question: '+q+'\nSpoken answer to expand into the chapter:\n'+answer
+      +'\n\n'+lnnDetailHint(),[],1400);
+    const p=parseModelJSON(raw,"full-steps chapter");
+    const ns=Array.isArray(p)?p[0]:p;
+    if(!ns||typeof ns!=="object"||Array.isArray(ns))return null;
+    return ns;
+  }catch(_){return null;}
+}
 
 /* ============ lesson language ============
    Only the SPOKEN and DISPLAYED text changes. Keys, mode names and enum
@@ -554,10 +600,20 @@ async function askClaude(system,user,history=[],max=2500){
    text rather than a bare position number nobody can act on. */
 function jsonSlice(txt){
   txt=txt.replace(/```[a-z]*\n?|```/g,"").trim();
-  const a=txt.indexOf('['), b=txt.lastIndexOf(']');
-  if(a>=0&&b>a)return txt.slice(a,b+1);
-  const c=txt.indexOf('{'), d=txt.lastIndexOf('}');
+  /* whichever container OPENS first is the outer one. Preferring [ ]
+     unconditionally used to GUT any object whose first nested array
+     closed before the object did — {"mode":"actions","actions":[...]}
+     came back as just the actions, and a full-steps answer chapter
+     degraded into one modeless fragment. */
+  const a=txt.indexOf('['), c=txt.indexOf('{');
+  if(a>=0&&(c<0||a<c)){
+    const b=txt.lastIndexOf(']');
+    if(b>a)return txt.slice(a,b+1);
+  }
+  const d=txt.lastIndexOf('}');
   if(c>=0&&d>c)return '['+txt.slice(c,d+1)+']';
+  const b=txt.lastIndexOf(']');
+  if(a>=0&&b>a)return txt.slice(a,b+1);
   return txt;
 }
 /* Split into string / non-string runs so repairs never touch prose. A
@@ -2640,7 +2696,8 @@ ${where}
 On the board right now: ${boardContext()}
 ${hive?`Grounded how-to knowledge from the hivemind (prefer this over your own memory, mention the source titles):
 ${hive}
-`:""}Student's question: ${q}`;
+`:""}${lnnDetailHint()}
+Student's question: ${q}`;
     /* the room exactly as the model is being told about it */
     const anchorSnap=WORLD_ANCHORS.slice();
     const raw=await askClaude(QA_SYS+langRule(),userMsg,qaHistory,3000);
@@ -2702,9 +2759,15 @@ ${hive}
     await bounded(playAnnotations(annos,anchorSnap),20000);
     for(const a of annos)if(a.label)chatMsg('sys','&#10148; annotated: '+a.label);
     await bounded(speech,90000);
+    /* THE CONTRACT: every interrupt is answered with a FULL-STEPS animated
+       chapter — short answers included, malformed offers rebuilt, topics
+       unrelated to the lesson taught from scratch. "shown" tracks whether
+       a playable chapter carried the answer; if nothing did, one is BUILT. */
+    let shown=false;
     if(nm&&COACH.on){
       chatMsg('sys','(a new chapter was offered — finish coaching to play it, '
                    +'the camera session would be thrown away)');
+      shown=true;              /* by design: the camera session is the board */
     }else if(nm){
       try{
         const p=parseModelJSON(nm[1].trim(),"new scene");
@@ -2723,19 +2786,33 @@ ${hive}
         chatMsg('sys','&#43; new chapter added: '+(ns.title||ns.sketch_prompt));
         if(!lessonRunning){answering=false;$('ask').disabled=false;resumeLesson();runLesson(at);return;}
         else pendingSeek=at;
-      }catch(e){chatMsg('sys','(new scene was malformed, skipped)');}
-    }else if(!COACH.on&&answer.length>80){
-      /* the model answered in words alone — the board still SHOWS it. A
-         rescue chapter carries the answer as narration; the rescue path
-         reads the prose, decides hands or body, and PERFORMS it. Every
-         substantial interrupt gets a picture, never just a voice. */
-      const ns={qa:true,fresh:true,mode:'anim',narration:answer,
-                title:q.length>46?q.slice(0,45)+'…':q};
+        shown=true;
+      }catch(e){chatMsg('sys','(the offered chapter was malformed — '
+                       +'building the full-steps animation instead)');}
+    }
+    if(!shown&&!COACH.on){
+      /* the answer is OWED its animation. First choice: a second model
+         call expands the spoken answer into a complete chapter — format
+         recognized (actions/hand/skeleton/compose/world/anim), FULL steps,
+         granularity set by the liquid network's detail-need trait. If even
+         that fails, the rescue path still PERFORMS the prose: a picture
+         always plays, never just a voice. */
+      $('status').textContent="Building the full-steps animation";
+      $('status').className='status busy';
+      const built=await qaFullSteps(q,answer);
+      $('status').textContent="";$('status').className='status';
+      const ns=built||{mode:'anim',narration:answer};
+      ns.qa=true; ns.fresh=true;
+      if(!ns.narration)ns.narration=answer;
+      if(!ns.title)ns.title=q.length>46?q.slice(0,45)+'…':q;
       prepScene(ns);
       const at=Math.min(currentScene+1,scenes.length);
       scenes.splice(at,0,ns);
       renderSceneList(); renderTimeline();
-      chatMsg('sys','&#43; the answer will also be performed on the board');
+      chatMsg('sys',built
+        ?'&#43; the answer plays as a full-steps '+(ns.mode||'anim')
+          +' chapter'
+        :'&#43; the answer will be performed on the board');
       if(!lessonRunning){answering=false;$('ask').disabled=false;
         resumeLesson();runLesson(at);return;}
       else pendingSeek=at;
@@ -4861,8 +4938,8 @@ $('coach').onclick=()=>{COACH.on?coachStop():coachStart();};
    across tracker flicker and learns their signature; the angle-band
    physics stays the judge. */
 const LNN={N:24,M:13,G:4,x:null,W:null,U:null,b:null,tau:null,A:null,
-           wo:null,bo:0,we:null,be:0,wp:null,bp:0,
-           y:0,yEng:0,yPred:0,z:null,eta:0.02,seeded:false};
+           wo:null,bo:0,we:null,be:0,wp:null,bp:0,wd:null,bd:0,
+           y:0,yEng:0,yPred:0,yNeed:0,need:0.5,z:null,eta:0.02,seeded:false};
 function _lnnRng(seed){let a=seed>>>0;return function(){
   a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
@@ -4886,21 +4963,36 @@ function lnnInit(){
      vectors against the real result (lnnTeachOutcome). The network
      experiments on its own forecasts and learns from being wrong. */
   LNN.wp=Array.from({length:N+M},()=>(r()*2-1)*0.1); LNN.bp=0;
+  /* the fourth readout: DETAIL NEED — "does THIS student need finer-grained
+     instruction?" Taught by replaying each resolved round's trajectory
+     against whether it took coached rounds to land (lnnTeachNeed), and
+     distilled into a slow-moving per-student trait (LNN.need) that the
+     INTERRUPT path applies: it decides how many, and how small, the steps
+     of every generated answer chapter are — for ANY topic, related to the
+     lesson or not. Self-experimentation reaching out of the camera loop
+     and into the explanations themselves. */
+  LNN.wd=Array.from({length:N+M},()=>(r()*2-1)*0.1); LNN.bd=0;
   try{                                /* the per-student readouts, earned */
-    const s=JSON.parse(localStorage.getItem('tutor_lnn_v4')||'null');
+    const s=JSON.parse(localStorage.getItem('tutor_lnn_v5')||'null');
     const okv=a=>Array.isArray(a)&&a.length===N+M&&a.every(Number.isFinite);
     if(s&&okv(s.wo)){LNN.wo=s.wo;LNN.bo=Number.isFinite(+s.bo)?+s.bo:0;}
     if(s&&okv(s.we)){LNN.we=s.we;LNN.be=Number.isFinite(+s.be)?+s.be:0;}
     if(s&&okv(s.wp)){LNN.wp=s.wp;LNN.bp=Number.isFinite(+s.bp)?+s.bp:0;}
+    if(s&&okv(s.wd)){LNN.wd=s.wd;LNN.bd=Number.isFinite(+s.bd)?+s.bd:0;}
+    if(s&&Number.isFinite(+s.need))
+      LNN.need=Math.max(0,Math.min(1,+s.need));
   }catch(_){}
   LNN.seeded=true;
 }
 function lnnSave(){
-  try{localStorage.setItem('tutor_lnn_v4',
+  try{localStorage.setItem('tutor_lnn_v5',
     JSON.stringify({wo:LNN.wo,bo:LNN.bo,we:LNN.we,be:LNN.be,
-                    wp:LNN.wp,bp:LNN.bp}));}catch(_){}
+                    wp:LNN.wp,bp:LNN.bp,wd:LNN.wd,bd:LNN.bd,
+                    need:LNN.need}));}catch(_){}
 }
-function lnnReset(){lnnInit();LNN.x.fill(0);LNN.y=0;LNN.yEng=0;LNN.yPred=0;}
+function lnnReset(){lnnInit();LNN.x.fill(0);
+  LNN.y=0;LNN.yEng=0;LNN.yPred=0;LNN.yNeed=0;}
+  /* LNN.need survives the reset on purpose — it is a TRAIT, not a state */
 function lnnTeachOutcome(zs,label){
   /* the delayed-label update: replay a round's feature vectors against
      how it actually ended — one cross-entropy step per vector */
@@ -4910,6 +5002,17 @@ function lnnTeachOutcome(zs,label){
     const g=LNN.eta*(label-_lnnSig(o));
     for(let i=0;i<z.length;i++)LNN.wp[i]+=g*z[i];
     LNN.bp+=g;
+  }
+}
+function lnnTeachNeed(zs,label){
+  /* same replay discipline for the DETAIL-NEED readout: label 1 when the
+     round needed coaching to land (or never landed), 0 on a clean hit */
+  lnnInit();
+  for(const z of zs){
+    let o=LNN.bd; for(let i=0;i<z.length;i++)o+=LNN.wd[i]*z[i];
+    const g=LNN.eta*(label-_lnnSig(o));
+    for(let i=0;i<z.length;i++)LNN.wd[i]+=g*z[i];
+    LNN.bd+=g;
   }
 }
 const _lnnSig=v=>1/(1+Math.exp(-v));
@@ -4935,7 +5038,13 @@ function lnnStep(u,dt,teach,teachEng){
   let e=LNN.be; for(let i=0;i<z.length;i++)e+=LNN.we[i]*z[i];
   LNN.yEng=_lnnSig(e);
   let pr=LNN.bp; for(let i=0;i<z.length;i++)pr+=LNN.wp[i]*z[i];
-  LNN.yPred=_lnnSig(pr); LNN.z=z;
+  LNN.yPred=_lnnSig(pr);
+  let nd=LNN.bd; for(let i=0;i<z.length;i++)nd+=LNN.wd[i]*z[i];
+  LNN.yNeed=_lnnSig(nd);
+  /* the trait distils slowly from the per-frame readout — a few seconds
+     of struggle should not rewrite who the student is */
+  LNN.need=0.98*LNN.need+0.02*LNN.yNeed;
+  LNN.z=z;
   if(teach!=null){
     /* online adaptation — cross-entropy gradient, which does not vanish
        when the readout is confidently wrong (delta rule saturates) */
@@ -4987,6 +5096,7 @@ function verifyEscalate(now){
      band, resets the clock and sends the tracked faults to the coach */
   VERIFY.round++; VERIFY.stepT0=now; VERIFY.hold=0;
   if(VERIFY.zbuf.length){lnnTeachOutcome(VERIFY.zbuf,0);   /* a miss, learned */
+    lnnTeachNeed(VERIFY.zbuf,1);           /* a coached round = detail needed */
     VERIFY.zbuf=[];}
   VERIFY.predLow=0; VERIFY.earlyHinted=false;
   const key=(VERIFY.steps[VERIFY.si]||{}).text||'';
@@ -5211,6 +5321,9 @@ function verifyNext(hit){
      trajectory looked like — the self-experimentation closing over the
      network's own forecasts */
   if(VERIFY.zbuf.length){lnnTeachOutcome(VERIFY.zbuf,hit?1:0);
+    /* and the detail-need readout: clean first-round hit teaches 0,
+       anything that needed coaching (or never landed) teaches 1 */
+    lnnTeachNeed(VERIFY.zbuf,(hit&&VERIFY.round===0)?0:1);
     VERIFY.zbuf=[];}
   VERIFY.predLow=0; VERIFY.earlyHinted=false;
   per[VERIFY.si].ok=per[VERIFY.si].ok||hit;
@@ -5502,6 +5615,8 @@ function verifyRender(now){
     +(LNN.yEng<0.35?' — clock paused':''),bx+130,y0+78);
   ctx.fillText('will land '+Math.round(LNN.yPred*100)+'%'
     +(VERIFY.earlyHinted?' — coached early':''),bx+270,y0+78);
+  ctx.fillText('detail need '+Math.round(LNN.need*100)+'%'
+    +' — answers sized to you',bx+420,y0+78);
 }
 /* ============ the knowledge quiz ============
    Camera verification checks the BODY learned the chapter; the quiz checks

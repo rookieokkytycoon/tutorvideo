@@ -3521,7 +3521,6 @@ async function runLesson(startAt=0){
   if(lessonRunning)return;
   lessonRunning=true; lessonAbort=false;
   player.cancelRequested=false;   /* a stale cancel must not skip chapter 1 */
-  player.cancelRequested=false;   /* a stale cancel must not skip ch. 1 */
   setBadge('live'); $('pauseBtn').disabled=false;
   try{
     for(let i=startAt;i<scenes.length;i++){

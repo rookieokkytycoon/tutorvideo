@@ -451,7 +451,7 @@ Make the new_scene DETAILED — its own narration (2-3 sentences), a real title,
 When coach-verify is armed, the steps of your new_scene are REQUIRED PRACTICE, not illustration: after the chapter plays, the student must perform those exact steps on their camera, tracked joint by joint, before the lesson proceeds — and the check of the chapter they interrupted still runs right after yours. So write every step as ONE short physically performable imperative ("Bend both knees to ninety degrees"), never a fact or an abstraction.
 THE PREFERRED new_scene whenever the student asks how to physically DO something — "show me", "how do I", "what grip", "walk me through it" — is {"mode":"actions","actions":[{"text":"Grip the cap and twist counter-clockwise","footage":"hand twisting bottle cap"}, ...]}: 2-4 short imperative actions, each with 2-5 words of "footage" naming the filmable thing. That chapter plays REAL FILM of each action cut to its narration, with the tracked hand or body rig performing the same movement over the film and your marker strokes on top — the fully physical explanation, and the strongest one this board has.
 A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements, with no film behind it. Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action — and when that action is an exercise, add "muscles":["glutes","quads",...] (lowercase common names) and the figure is drawn as an anatomy body with those groups burning red-orange while they work, exactly like the lesson's own exercise chapters. All of these are fast, so prefer them over a diagram any time the answer is a movement rather than a fact.
-When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in one 3D room at real scale instead of side by side, which is the better answer when the question is about where things are relative to each other.
+When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","step_videos":true,"actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in ONE 3D ROOM at real scale — with "step_videos":true the room's screen plays REAL FOOTAGE of each step, cut to the moment the actor performs it, while the camera travels between the actors and the screen. That room is this board's FULL INSTRUCTION VIDEO: prefer it for a complete how-to that involves the body AND the hands AND real objects or tools, and for any question about where things are relative to each other. The room is INTERACTIVE — the student can drag to orbit it while you keep teaching, and your <camera> moves answer vantage-point questions inside it.
 If the board is already a 3D room, you may ALSO answer by moving the camera:
 <camera>{"target":"grip index tip","dist":0.8,"seconds":1.4,"label":"close on the grip"}</camera>
 "target" is one of the anchor names listed on the board above (or [x,y,z]); "shot" may instead name one of the director's own shots (wide, medium, close, side, screen, curve); "dist" is metres from the target; "yaw" and "pitch" are radians. Use it whenever the question is really about a vantage point — "show me from the side", "get closer", "what is behind it", "can I see the screen" — because in a room that question has a real answer. A camera move can accompany <answer> and <strokes>; annotations stay stuck to what they were pointing at while the camera moves.
@@ -487,7 +487,7 @@ RECOGNIZE THE FORMAT of the question and pick the mode:
 - finger technique -> {"mode":"hand","hand_steps":["...", ...]}
 - a whole-body movement or exercise -> {"mode":"skeleton","motion_steps":["...", ...]} plus "muscles":["quads",...] when it is an exercise
 - body AND fingers together -> {"mode":"compose","parts":[{"kind":"skeleton","title":"posture","steps":[...]},{"kind":"hand","title":"grip","steps":[...]}]}
-- where things are relative to each other -> {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]}
+- a COMPLETE how-to involving the body AND the hands AND real objects or tools, or where things are relative to each other -> {"mode":"world","step_videos":true,"actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} — the INTERACTIVE instruction video: real footage of every step plays on the room's screen, cut to the actor performing it, the camera travels between them, and the student can drag to orbit the room
 - an abstract mechanism, fact or comparison -> {"mode":"anim","steps":[{"beat":"one spoken beat","els":[...]},...]}
 ALWAYS include "narration" (2-3 spoken sentences that TEACH it), "title" (short noun phrase) and "seconds" (8-18).
 The steps are the FULL STEPS of the how-to: every action, one short physically performable imperative each, nothing skipped and nothing implied. The question may be UNRELATED to any current lesson — teach it from scratch anyway; there is no such thing as off-topic.`;
@@ -2941,6 +2941,14 @@ function prepScene(sc){
      and play as an empty board, so anything not on this list becomes an
      animation — which is the one mode that always works. */
   if(typeof sc.mode!=="string"||SCENE_MODES.indexOf(sc.mode)<0)sc.mode="anim";
+  /* an ANSWER that arrives as a 3D room is the full instruction video:
+     unless the model said otherwise, the room's screen carries real
+     footage of every step, cut to the actor performing it — the
+     explanation, the interaction and the film integrated in one space */
+  if(sc.qa&&sc.mode==="world"&&sc.step_videos===undefined
+     &&(Array.isArray(sc.actors)?sc.actors:[])
+       .some(a=>a&&Array.isArray(a.steps)&&a.steps.length))
+    sc.step_videos=true;
   /* narration is spoken AND captioned, so it has to exist; a chapter the
      model wrote without one still has a title to fall back on */
   sc.narration=(typeof sc.narration==="string"&&sc.narration.trim())

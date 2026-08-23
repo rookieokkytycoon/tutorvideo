@@ -448,6 +448,7 @@ RECOGNIZE THE FORMAT of the question and pick the chapter mode to match it:
 - body AND fingers together -> "compose"; where things are relative to each other -> "world";
 - an abstract mechanism, comparison or structure -> "anim" with 2-4 beats that BUILD the picture.
 Make the new_scene DETAILED — its own narration (2-3 sentences), a real title, 2-4 steps/actions — and it may carry "footage": 2-5 words naming real stock film to play behind it.
+When coach-verify is armed, the steps of your new_scene are REQUIRED PRACTICE, not illustration: after the chapter plays, the student must perform those exact steps on their camera, tracked joint by joint, before the lesson proceeds — and the check of the chapter they interrupted still runs right after yours. So write every step as ONE short physically performable imperative ("Bend both knees to ninety degrees"), never a fact or an abstraction.
 THE PREFERRED new_scene whenever the student asks how to physically DO something — "show me", "how do I", "what grip", "walk me through it" — is {"mode":"actions","actions":[{"text":"Grip the cap and twist counter-clockwise","footage":"hand twisting bottle cap"}, ...]}: 2-4 short imperative actions, each with 2-5 words of "footage" naming the filmable thing. That chapter plays REAL FILM of each action cut to its narration, with the tracked hand or body rig performing the same movement over the film and your marker strokes on top — the fully physical explanation, and the strongest one this board has.
 A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements, with no film behind it. Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action — and when that action is an exercise, add "muscles":["glutes","quads",...] (lowercase common names) and the figure is drawn as an anatomy body with those groups burning red-orange while they work, exactly like the lesson's own exercise chapters. All of these are fast, so prefer them over a diagram any time the answer is a movement rather than a fact.
 When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in one 3D room at real scale instead of side by side, which is the better answer when the question is about where things are relative to each other.
@@ -3538,6 +3539,7 @@ let lessonAbort=false;
 function stopLesson(){
   if(!lessonRunning)return Promise.resolve();
   lessonAbort=true; pendingSeek=null;
+  VERIFY.owed.length=0;      /* a stopped lesson's debts die with it */
   player.cancelRequested=true;
   if(player.paused)resumeLesson();       /* a paused lesson can never exit */
   return new Promise(res=>{
@@ -3595,7 +3597,30 @@ async function runLesson(startAt=0){
          to the animated answer of the question they just asked. NOTHING
          stands between them and it: no camera check, no quiz question of
          the chapter they interrupted. The answer plays NEXT. */
-      if(pendingSeek==null&&VERIFY.on)await verifyChapter(sc);
+      let vcut=true;               /* not run at all = still owed */
+      if(pendingSeek==null&&VERIFY.on)vcut=await verifyChapter(sc);
+      if(lessonAbort)break;
+      /* but an interrupt DEFERS the camera check, it never waives it: a
+         check that was skipped — or cut mid-round — to play an answer is
+         banked as owed, and re-runs the moment the answer has played */
+      if(vcut&&VERIFY.on&&pendingSeek!=null&&(scenes[pendingSeek]||{}).qa
+         &&verifySteps(sc).length&&VERIFY.owed.indexOf(sc)<0){
+        VERIFY.owed.push(sc);
+        chatMsg('sys','&#9202; camera check deferred — "'+sceneName(sc)
+          +'" is still verified right after the answer plays');
+      }
+      /* the debt comes due HERE: after the answer chapter played and its
+         OWN steps were verified, every owed check runs before the lesson
+         may proceed — being interrupted never skips the verification */
+      while(pendingSeek==null&&VERIFY.on&&VERIFY.owed.length&&!lessonAbort){
+        const owed=VERIFY.owed.shift();
+        chatMsg('sys','&#9673; back to the deferred camera check — "'
+          +sceneName(owed)+'"');
+        const ocut=await verifyChapter(owed);
+        /* interrupted AGAIN mid-debt: the debt survives, front of the line */
+        if(ocut&&pendingSeek!=null&&(scenes[pendingSeek]||{}).qa
+           &&VERIFY.owed.indexOf(owed)<0)VERIFY.owed.unshift(owed);
+      }
       if(lessonAbort)break;
       /* and the knowledge loop: was the chapter LEARNED, not just watched?
          One grounded check question; a miss becomes an animated
@@ -3709,6 +3734,22 @@ $('go').onclick=startLesson;
    ordinary lesson: same narration, same footage, same rigs, same strokes —
    and an interruption is answered from what the book says, with the book
    cited as the source. */
+/* every ANALYZED tutorial — an uploaded book, a mined YouTube how-to, a
+   followed livestream — is a curriculum to be FOLLOWED, not watched:
+   analyzing one arms strict coach-verify, so every step of every chapter
+   (and of every interrupt answer) is performed on camera before the
+   lesson proceeds. One click on Coach-verify relaxes it back. */
+function verifyArm(source){
+  if(VERIFY.on&&VERIFY.strict)return;
+  VERIFY.on=true; VERIFY.strict=true;
+  $('verifyBtn').textContent='Coach-verify';
+  $('verifyBtn').setAttribute('aria-pressed','true');
+  chatMsg('sys','&#9673; '+source+' — COACH-VERIFY armed: each step is '
+    +'performed on camera, graded against the exact demonstrated motion, '
+    +'and the lesson proceeds only when it lands. Interrupt answers are '
+    +'verified too, and an interrupted check comes back right after the '
+    +'answer. Click "Coach-verify" to relax it.');
+}
 $('bookBtn').onclick=()=>$('bookfile').click();
 $('bookfile').onchange=async e=>{
   const files=Array.from(e.target.files||[]).slice(0,6);
@@ -3724,19 +3765,7 @@ $('bookfile').onchange=async e=>{
      to the same continuous live lesson. A channel of instruction, not a
      pile of separate lessons. */
   $('bookBtn').disabled=true;
-  /* a book tutorial is a curriculum to be FOLLOWED, not watched: uploading
-     one arms strict coach-verify, so every step of every chapter must be
-     performed on camera before the lesson proceeds. One click on the
-     Coach-verify button relaxes it back to watch-only. */
-  if(!VERIFY.on){
-    VERIFY.on=true; VERIFY.strict=true;
-    $('verifyBtn').textContent='Coach-verify';
-    $('verifyBtn').setAttribute('aria-pressed','true');
-    chatMsg('sys','&#9673; book tutorial — COACH-VERIFY armed: each step is '
-      +'performed on camera, graded against the exact demonstrated motion, '
-      +'and the lesson proceeds only when it lands. Click "Coach-verify" '
-      +'to relax it.');
-  }
+  verifyArm('book tutorial');
   if(files.length>1)
     chatMsg('sys','&#128218; '+files.length+' books queued — each becomes a '
            +'segment of one continuous lesson');
@@ -4071,6 +4100,9 @@ async function mineVideo(url){
            +count('body')+' body), now '+nodes+' nodes in the hivemind');
     if(d.doc.warnings&&d.doc.warnings.length)
       chatMsg('sys','the video warned: '+d.doc.warnings[0]);
+    /* a mined video is analyzed instruction, the same as a book — its
+       steps are to be performed, not watched */
+    verifyArm('mined video tutorial');
     playPreset(d.title,d.lesson);
   }catch(e){
     chatMsg('sys','mining failed — '+e.message);
@@ -4165,6 +4197,8 @@ $('liveBtn').onclick=()=>{
   $('liveBtn').setAttribute('aria-pressed','true');
   chatMsg('sys','&#9679; following the livestream — new instruction becomes '
          +'new chapters as it arrives');
+  /* a followed stream is analyzed instruction too — same contract */
+  verifyArm('live stream tutorial');
   livePoll(true);
 };
 
@@ -4934,6 +4968,7 @@ const VERIFY={on:false,strict:false,active:false,busy:false,
   live:null,lm:null,handLm:null,handPrev:null,handPrevAt:0,handScore:0,
   clip:null,handClip:null,loopT0:0,
   zbuf:[],predLow:0,earlyHinted:false,
+  owed:[],           /* checks an interrupt deferred — a debt, never waived */
   score:0,cues:[],per:[],done:null,round:0,log:[]};
 /* The adaptive part, in the spirit of liquid networks: the pass threshold
    per action is a parameter that keeps adapting to THIS student while they
@@ -5038,6 +5073,22 @@ function verifySteps(sc){
     if(!p||!Array.isArray(p.steps))return;
     if(p.kind==='skeleton'||p.kind==='body')add(p.steps,'body');
     if(p.kind==='hand')add(p.steps,'hand');});
+  /* a rescued or prose-only chapter (a spoken interrupt answer, say) lists
+     no steps of its own — but its SOLVED clip does: the rig parsed the
+     narration into gestures, and what the rig performed, the camera can
+     require back. Nothing performable escapes verification this way. */
+  if(!out.length&&sc.clip){
+    const panes=(sc.clip.kind==='compose'||sc.clip.kind==='world')
+      ?(sc.clip.parts||sc.clip.actors||[]):[sc.clip];
+    panes.forEach(c=>{
+      if(!c)return;
+      const kind=c.kind==='hand'?'hand'
+                :(c.kind==='skeleton'||!c.kind)?'body':null;
+      if(!kind)return;
+      (c.gestures||[]).forEach(g=>{
+        const t=String((g&&(g.text||g.name))||'').trim();
+        if(t&&!out.some(o=>o.text===t))out.push({text:t,kind:kind});});});
+  }
   return out.slice(0,8);
 }
 async function verifyCamera(){
@@ -5061,8 +5112,10 @@ function verifyRelease(){
   VERIFY.active=false;
 }
 async function verifyChapter(sc){
+  /* returns true when the run was CUT by an interrupt — the caller banks
+     the chapter as owed and re-verifies it after the answer has played */
   const steps=verifySteps(sc);
-  if(!steps.length||VERIFY.busy)return;
+  if(!steps.length||VERIFY.busy)return false;
   VERIFY.busy=true;
   try{
     const bodySteps=steps.filter(s=>s.kind==='body');
@@ -5120,6 +5173,14 @@ async function verifyChapter(sc){
     const out=await new Promise(res=>{VERIFY.done=res; VERIFY.active=true;});
     VERIFY.active=false; VERIFY.done=null;
     setBadge('live'); captionText="";
+    if(out.cut){
+      /* interrupted mid-check to play an answer — the partial round is
+         thrown away (its outcome never resolved, so nothing is taught)
+         and the WHOLE check re-runs once the answer is done */
+      chatMsg('sys','&#9202; camera check interrupted — deferred, not '
+        +'waived: it re-runs after the answer');
+      return true;
+    }
     const hit=out.per.filter(p=>p.ok).length;
     const best=out.per.reduce((m,p)=>Math.max(m,p.best),0);
     const extra=out.per.reduce((m,p)=>m+(p.rounds||0),0);
@@ -5135,11 +5196,13 @@ async function verifyChapter(sc){
       +(extra?', '+extra+' coached round'+(extra>1?'s':'')
         +' — the pass band adapted to you':'')
       +(hit===out.per.length?'':' — moving on; ask and it will re-explain'));
+    return false;
   }catch(e){
     chatMsg('sys','&#9888; camera verify skipped — '+(e&&e.message||e));
     VERIFY.active=false; VERIFY.done=null;
     /* a denied camera left "asking for your camera" on screen forever */
     $('status').textContent="";$('status').className='status';
+    return false;      /* a broken camera is not a debt to retry forever */
   }finally{VERIFY.busy=false; lnnSave();}
 }
 function verifyNext(hit){
@@ -5280,9 +5343,12 @@ function verifyPanes(){
 }
 function verifyRender(now){
   /* a pending seek is the student saying "go there instead" — usually to
-     the animated answer they just asked for. The camera check yields. */
+     the animated answer they just asked for. The camera check yields, but
+     it says so: "cut" tells the lesson loop this run was interrupted, not
+     finished, so the check is DEFERRED and comes back after the answer. */
   if(lessonAbort||!VERIFY.on||pendingSeek!=null){
-    if(VERIFY.done)VERIFY.done({per:VERIFY.per});
+    if(VERIFY.done)VERIFY.done({per:VERIFY.per,
+      cut:pendingSeek!=null&&!lessonAbort&&VERIFY.on});
     return;
   }
   verifyTick(now);

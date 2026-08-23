@@ -441,7 +441,13 @@ Respond in exactly this format:
 Then OPTIONALLY exactly one of:
 <strokes>1-3 annotation strokes placed ON the existing animation — a circle around a part, an arrow at it, an underline, at the parts' grid locations. Same stroke format with <id> labels.</strokes>
 <new_scene>{"narration":"1-2 spoken sentences","title":"short noun phrase","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[ ... ]}]}</new_scene>
-Use <new_scene> when the question deserves its OWN animation (a different mechanism, a "show me X" request); it becomes the next chapter.
+PREFER <new_scene> — a FULL animated chapter, played immediately as the answer — for any question that asks how, why, "show me", "what happens if", or whose answer involves a movement, a mechanism, a structure or a place. Words plus a marker stroke are the answer only for a quick factual clarification ("what's that called?", "how many?"). A student who interrupts deserves to be SHOWN, not told.
+RECOGNIZE THE FORMAT of the question and pick the chapter mode to match it:
+- a physical procedure -> "actions" (real film per action);
+- finger technique -> "hand"; a whole-body movement or posture -> "skeleton" (with "muscles" when it is an exercise);
+- body AND fingers together -> "compose"; where things are relative to each other -> "world";
+- an abstract mechanism, comparison or structure -> "anim" with 2-4 beats that BUILD the picture.
+Make the new_scene DETAILED — its own narration (2-3 sentences), a real title, 2-4 steps/actions — and it may carry "footage": 2-5 words naming real stock film to play behind it.
 THE PREFERRED new_scene whenever the student asks how to physically DO something — "show me", "how do I", "what grip", "walk me through it" — is {"mode":"actions","actions":[{"text":"Grip the cap and twist counter-clockwise","footage":"hand twisting bottle cap"}, ...]}: 2-4 short imperative actions, each with 2-5 words of "footage" naming the filmable thing. That chapter plays REAL FILM of each action cut to its narration, with the tracked hand or body rig performing the same movement over the film and your marker strokes on top — the fully physical explanation, and the strongest one this board has.
 A new_scene may instead be {"mode":"hand","hand_steps":["Grip the cap and twist counter-clockwise", ...]} — a close-up tracked hand demonstrating the actual finger movements, with no film behind it. Or {"mode":"skeleton","motion_steps":[...]} for a whole-body action — and when that action is an exercise, add "muscles":["glutes","quads",...] (lowercase common names) and the figure is drawn as an anatomy body with those groups burning red-orange while they work, exactly like the lesson's own exercise chapters. All of these are fast, so prefer them over a diagram any time the answer is a movement rather than a fact.
 When the answer needs the body AND the fingers together, use {"mode":"compose","parts":[{"kind":"skeleton","steps":[...],"title":"posture"},{"kind":"hand","steps":[...],"title":"grip"}]} — the board splits and both play on one timeline, which is the honest answer to "show me how to hold it while I do that". Or {"mode":"world","actors":[{"kind":"skeleton","steps":[...]},{"kind":"hand","steps":[...]}]} to put them in one 3D room at real scale instead of side by side, which is the better answer when the question is about where things are relative to each other.
@@ -2724,7 +2730,12 @@ ${hive}
   }
   answering=false; $('ask').disabled=false;
   resumeLesson();
-  if(pendingSeek!=null&&lessonRunning)player.cancelRequested=true;
+  /* cancel only a scene that is actually PLAYING so the lesson jumps to
+     the answer's new chapter. Asked between scenes (mid-verify, mid-quiz,
+     paused) there is nothing to cancel — and a lingering flag used to
+     kill the new animation itself on its very first frame. */
+  if(pendingSeek!=null&&lessonRunning&&player.active)
+    player.cancelRequested=true;
 }
 $('ask').onclick=handleQuestion;
 $('q').addEventListener('keydown',e=>{if(e.key==='Enter')handleQuestion();});

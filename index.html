@@ -2723,6 +2723,21 @@ ${hive}
         if(!lessonRunning){answering=false;$('ask').disabled=false;resumeLesson();runLesson(at);return;}
         else pendingSeek=at;
       }catch(e){chatMsg('sys','(new scene was malformed, skipped)');}
+    }else if(!COACH.on&&answer.length>80){
+      /* the model answered in words alone — the board still SHOWS it. A
+         rescue chapter carries the answer as narration; the rescue path
+         reads the prose, decides hands or body, and PERFORMS it. Every
+         substantial interrupt gets a picture, never just a voice. */
+      const ns={qa:true,fresh:true,mode:'anim',narration:answer,
+                title:q.length>46?q.slice(0,45)+'…':q};
+      prepScene(ns);
+      const at=Math.min(currentScene+1,scenes.length);
+      scenes.splice(at,0,ns);
+      renderSceneList(); renderTimeline();
+      chatMsg('sys','&#43; the answer will also be performed on the board');
+      if(!lessonRunning){answering=false;$('ask').disabled=false;
+        resumeLesson();runLesson(at);return;}
+      else pendingSeek=at;
     }
     await new Promise(r=>setTimeout(r,450));
   }catch(e){
@@ -3576,12 +3591,16 @@ async function runLesson(startAt=0){
       /* verified tutorial: the demonstration is only half the loop — now
          the CAMERA watches the student perform this chapter's own steps,
          gesture-tracked joint by joint, before the lesson moves on */
-      if(VERIFY.on)await verifyChapter(sc);
+      /* a pending seek means the student redirected the lesson — usually
+         to the animated answer of the question they just asked. NOTHING
+         stands between them and it: no camera check, no quiz question of
+         the chapter they interrupted. The answer plays NEXT. */
+      if(pendingSeek==null&&VERIFY.on)await verifyChapter(sc);
       if(lessonAbort)break;
       /* and the knowledge loop: was the chapter LEARNED, not just watched?
          One grounded check question; a miss becomes an animated
          re-explanation and, missed twice, a study trip */
-      if(QUIZ.on)await quizChapter(sc);
+      if(pendingSeek==null&&QUIZ.on)await quizChapter(sc);
       if(lessonAbort)break;
       await waitWhilePaused();
       if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;}
@@ -5212,7 +5231,9 @@ function verifyPanes(){
   return {L:[gap,top,w,h], R:[gap*2+w,top,w,h], stripY:top+h+8};
 }
 function verifyRender(now){
-  if(lessonAbort||!VERIFY.on){
+  /* a pending seek is the student saying "go there instead" — usually to
+     the animated answer they just asked for. The camera check yields. */
+  if(lessonAbort||!VERIFY.on||pendingSeek!=null){
     if(VERIFY.done)VERIFY.done({per:VERIFY.per});
     return;
   }
@@ -5395,8 +5416,8 @@ function quizAsk(d){
     +chip(-1,'skip'));
   return new Promise(res=>{
     QUIZ._res=res;
-    const t=setInterval(()=>{                 /* a stopped lesson lets go */
-      if(lessonAbort||!QUIZ.on){clearInterval(t);
+    const t=setInterval(()=>{   /* a stopped or redirected lesson lets go */
+      if(lessonAbort||!QUIZ.on||pendingSeek!=null){clearInterval(t);
         if(QUIZ._res){QUIZ._res=null;res(null);}}
       if(!QUIZ._res)clearInterval(t);
     },300);

@@ -2665,6 +2665,11 @@ function resumeLesson(){
 async function handleQuestion(){
   const q=$('q').value.trim();
   if(!q||answering)return;
+  /* mid role-play the Ask box IS the conversation: what the student types
+     (or says — the mic lands here too) is their line in the exchange, not
+     a question for the tutor */
+  if(SIM._res){const r=SIM._res; SIM._res=null; $('q').value="";
+    chatMsg('you',q); r(q); return;}
   /* mid-coaching there are no chapters, but there is very much something to
      ask about — the pose the student is holding right now */
   if(!scenes.length&&!COACH.on){$('status').textContent="Start a lesson first";$('status').className='status err';return;}
@@ -3749,6 +3754,11 @@ async function runLesson(startAt=0){
          re-explanation and, missed twice, a study trip */
       if(pendingSeek==null&&QUIZ.on)await quizChapter(sc);
       if(lessonAbort)break;
+      /* and a SOCIAL chapter ends in practice of the only kind that can
+         verify it: a role-play with the partner in the 3D room, measured
+         into the quantified self */
+      if(pendingSeek==null&&SIM.on&&simIsSocial(sc))await simChapter(sc);
+      if(lessonAbort)break;
       await waitWhilePaused();
       if(pendingSeek!=null){i=pendingSeek-1;pendingSeek=null;}
     }
@@ -3784,6 +3794,17 @@ async function runLesson(startAt=0){
           +' — ask about any of them, or click their chapters to replay'
         :' — clean sweep'));
       QUIZ.asked=QUIZ.right=0; QUIZ.missed.length=0;
+    }
+    if(SIM.log.length){
+      const avg=Math.round(SIM.log.reduce((a,l)=>a+l.score,0)/SIM.log.length);
+      chatMsg('sys','&#9673; social practice: '+SIM.log.length
+        +' exchange(s), session avg '+avg
+        +' — quantified self: lifetime avg '+Math.round(SELF.score)
+        +' over '+SELF.n+' exchanges, typical reply '
+        +SELF.latency.toFixed(1)+'s / '+Math.round(SELF.words)+' words'
+        +(SELF.accN>=4?', forecast right '
+          +Math.round(100*SELF.acc/SELF.accN)+'% of the time':''));
+      SIM.log.length=0; SIM.low=0;
     }
   }
   if(lessonAbort){lessonAbort=false;return;}      /* something else is starting */
@@ -5749,6 +5770,191 @@ $('quizBtn').onclick=()=>{
     :'quiz off'+(QUIZ.asked?' — '+QUIZ.right+'/'+QUIZ.asked+' so far':''));
 };
 
+/* ============ social simulation ============
+   Movement chapters are verified by the camera; knowledge by the quiz. A
+   SOCIAL skill can only be verified by USING it — so a social chapter ends
+   in a role-play: a partner character speaks from the 3D room (a skeleton
+   actor performing its own body language), the student answers by voice or
+   the Ask box, and the reply is graded against the chapter's skill. Every
+   exchange is measured into the QUANTIFIED SELF — score, response latency,
+   reply length, persisted per student — and an online logistic predictor
+   over that record (the same online cross-entropy discipline as the liquid
+   network's readouts) forecasts whether the next exchange will land BEFORE
+   it starts. The forecast is applied: a predicted struggle makes the
+   partner scaffold (warmer, easier opening); a predicted breeze makes it
+   stretch. A low-scoring reply is re-explained in full-steps animation
+   through the same QA path everything else uses. */
+const SIM={on:true,busy:false,told:false,low:0,_res:null,log:[]};
+const SELF={n:0,score:50,latency:8,words:12,acc:0,accN:0,
+            w:[0,0,0,0],b:0,eta:0.15};
+function selfLoad(){
+  try{
+    const s=JSON.parse(localStorage.getItem('tutor_self_v1')||'null');
+    if(!s)return;
+    ['n','score','latency','words','acc','accN','b'].forEach(k=>{
+      if(Number.isFinite(+s[k]))SELF[k]=+s[k];});
+    if(Array.isArray(s.w)&&s.w.length===4&&s.w.every(Number.isFinite))
+      SELF.w=s.w;
+  }catch(_){}
+}
+function selfSave(){
+  try{localStorage.setItem('tutor_self_v1',JSON.stringify(SELF));}catch(_){}
+}
+selfLoad();
+function selfFeatures(latency,words){
+  return [SELF.score/100,
+          Math.min(1,(latency==null?SELF.latency:latency)/30),
+          Math.min(1,(words==null?SELF.words:words)/40),
+          Math.min(1,SELF.n/50)];
+}
+function selfPredict(){
+  /* BEFORE the exchange: forecast p(reply lands >=70) from who the record
+     says this student is — their running averages, not this reply */
+  const z=selfFeatures(null,null);
+  let o=SELF.b; for(let i=0;i<4;i++)o+=SELF.w[i]*z[i];
+  return 1/(1+Math.exp(-o));
+}
+function selfLearn(pred,latency,words,landed){
+  /* AFTER: one cross-entropy step on what actually happened, and an honest
+     ledger of whether the pre-exchange forecast was right */
+  const z=selfFeatures(latency,words);
+  let o=SELF.b; for(let i=0;i<4;i++)o+=SELF.w[i]*z[i];
+  const p=1/(1+Math.exp(-o));
+  const g=SELF.eta*((landed?1:0)-p);
+  for(let i=0;i<4;i++)SELF.w[i]+=g*z[i];
+  SELF.b+=g;
+  SELF.accN++; if((pred>=0.5)===!!landed)SELF.acc++;
+}
+function selfRecord(score,latency,words){
+  const a=0.15;
+  SELF.n++;
+  SELF.score=(1-a)*SELF.score+a*score;
+  SELF.latency=(1-a)*SELF.latency+a*latency;
+  SELF.words=(1-a)*SELF.words+a*words;
+  selfSave();
+}
+const SIM_WORDS=/\b(conversation|small talk|greeting|introduc\w*|interview|network\w*|negotiat\w*|apolog\w*|feedback|eye contact|listen\w*|empathy|persuas\w*|assertive\w*|conflict|dating|date|social|rapport|body language|presentation|public speaking|charisma|compliment|boundar\w*|de.?escalat\w*)\b/i;
+function simIsSocial(sc){
+  return SIM_WORDS.test((topicNow||'')+' '+(sceneName(sc)||'')
+                        +' '+(sc.narration||''));
+}
+const SIM_SYS=`You open a SOCIAL ROLE-PLAY inside an animated lesson. You play ONE character the student must interact with, practicing the chapter's skill. Return STRICT JSON only — no prose, no fence:
+{"skill":"the one skill being practiced, 2-6 words","scenario":"one sentence setting the scene, spoken to the student","partner":"your character's opening line, natural spoken dialogue","gesture":"one short imperative for the character's body language (e.g. 'Wave hello with an open palm, then stand relaxed')"}
+Stay in a scene a beginner could meet tomorrow. If the instructions say SCAFFOLD, open warm and easy; if STRETCH, make the character realistically difficult (distracted, skeptical, brusque) — never abusive.`;
+const SIM_EVAL_SYS=`You grade ONE reply in a social role-play, against the skill being practiced. Return STRICT JSON only:
+{"score":0-100,"feedback":"one warm, concrete sentence about their reply","better":"a stronger version of their line, natural dialogue","partner":"your character's next spoken line continuing the scene, or \\"\\" if the scene is complete","gesture":"the character's body language for that line, or \\"\\"","done":true or false}
+Score the SKILL, not eloquence: a plain reply that does the skill beats a fancy one that dodges it. 70 is the landing bar.`;
+async function simTurn(line,gesture,skill){
+  /* the partner acts from the 3D room: a skeleton actor performing its
+     own body language while the line is spoken — the same player any
+     chapter uses, so orbiting, annotations and captions all work */
+  const ns={mode:'world',qa:true,sim:true,fresh:true,
+            title:'role-play: '+(skill||'social skill'),
+            narration:line,seconds:8,
+            actors:[{kind:'skeleton',title:'your partner',
+                     steps:[gesture||'Stand relaxed and make eye contact']}]};
+  prepScene(ns);
+  try{await ensureMedia(ns);}catch(_){}
+  wipe(); captionText=line; captionQA=true;
+  if(voiceOn)speak(line);
+  await playScene(ns,(ns.seconds||8)*1000);
+}
+function simReply(){
+  captionText="Your turn — speak (mic) or type your line, then Ask";
+  captionQA=true;
+  return new Promise(res=>{
+    SIM._res=res;
+    const t0=performance.now();
+    const t=setInterval(()=>{   /* a stopped or redirected lesson lets go */
+      if(lessonAbort||pendingSeek!=null||performance.now()-t0>60000){
+        clearInterval(t);
+        if(SIM._res){SIM._res=null;res(null);}}
+      if(!SIM._res)clearInterval(t);
+    },300);
+  });
+}
+async function simChapter(sc){
+  if(SIM.busy)return;
+  SIM.busy=true;
+  try{
+    if(!SIM.told){SIM.told=true;
+      chatMsg('sys','&#9673; social simulation — this chapter is INTERACTION '
+        +'practice: the partner speaks from the 3D room, you reply by mic or '
+        +'the Ask box. Every exchange is measured into your quantified self, '
+        +'and its predictor sizes the difficulty to you.');}
+    const pred=selfPredict();
+    const shape=SELF.n<5?''
+      :pred<0.4?'SCAFFOLD — the record predicts a struggle ('
+        +Math.round(pred*100)+'%), open warm and easy.'
+      :pred>0.75?'STRETCH — the record predicts an easy landing ('
+        +Math.round(pred*100)+'%), make it realistically hard.':'';
+    if(shape)chatMsg('sys','&#9678; quantified self: predicted '
+      +Math.round(pred*100)+'% to land — '
+      +(pred<0.4?'the partner will go easier':'the partner will push harder'));
+    const raw=await askClaude(SIM_SYS+langRule(),
+      'Topic: '+topicNow+'\nChapter: "'+sceneName(sc)+'" — '
+      +(sc.narration||'')+'\n'+shape+'\n'+lnnDetailHint(),[],700);
+    const p0=parseModelJSON(raw,'role-play');
+    const d=Array.isArray(p0)?p0[0]:p0;
+    if(!d||typeof d!=='object'||!d.partner)return;
+    chatMsg('tutor','<b>role-play — '+(d.skill||'practice')+'</b><br>'
+      +(d.scenario||''));
+    if(voiceOn&&d.scenario)await speak(d.scenario,true);
+    let line=d.partner, gesture=d.gesture, history=[];
+    for(let turn=0;turn<3&&line;turn++){
+      if(lessonAbort||pendingSeek!=null)break;
+      chatMsg('tutor','&#128100; '+line);
+      await simTurn(line,gesture,d.skill);
+      if(lessonAbort||pendingSeek!=null)break;
+      const askT0=performance.now();
+      const reply=await simReply();
+      captionText=""; captionQA=false;
+      if(reply==null)break;
+      const latency=(performance.now()-askT0)/1000;
+      const words=reply.split(/\s+/).filter(Boolean).length;
+      const eraw=await askClaude(SIM_EVAL_SYS+langRule(),
+        'Skill: '+(d.skill||'')+'\nScenario: '+(d.scenario||'')
+        +'\nHistory so far:\n'+history.join('\n')
+        +'\nYour character said: "'+line+'"\nStudent replied: "'+reply+'"'
+        +'\n'+lnnDetailHint(),[],700);
+      const e0=parseModelJSON(eraw,'role-play grade');
+      const ev=Array.isArray(e0)?e0[0]:e0;
+      if(!ev||typeof ev!=='object'||!Number.isFinite(+ev.score))break;
+      const score=Math.max(0,Math.min(100,+ev.score));
+      const landed=score>=70;
+      selfLearn(pred,latency,words,landed);
+      selfRecord(score,latency,words);
+      SIM.log.push({skill:d.skill||'',score:score});
+      history.push('Partner: '+line,'Student: '+reply);
+      chatMsg('tutor',(landed?'&#10003; ':'&#9678; ')+score+'/100 — '
+        +(ev.feedback||'')
+        +(ev.better&&!landed?'<br>stronger: &ldquo;'+ev.better+'&rdquo;':''));
+      if(voiceOn)speak((landed?'Nice. ':'Almost. ')+(ev.feedback||''));
+      chatMsg('sys','&#9678; quantified self: predicted '
+        +Math.round(pred*100)+'% &rarr; scored '+score
+        +' &middot; reply in '+latency.toFixed(1)+'s &middot; '+words
+        +' words &middot; lifetime avg '+Math.round(SELF.score)
+        +' over '+SELF.n);
+      if(!landed){
+        SIM.low++;
+        /* the miss is re-explained IN FULL-STEPS ANIMATION through the
+           same agentic QA path everything else uses */
+        if(!answering&&!lessonAbort&&pendingSeek==null){
+          $('q').value='Show me, step by step with an animation: how to '
+            +(d.skill||'handle this social moment')
+            +'. In the role-play I said "'+reply.slice(0,120)+'"';
+          handleQuestion();
+        }
+        /* struggling twice sends the tutor to STUDY the skill live */
+        if(SIM.low>=2){verifyStudy(d.skill||sceneName(sc));SIM.low=0;}
+        break;
+      }
+      line=(ev.done||!ev.partner)?null:String(ev.partner);
+      gesture=ev.gesture||'';
+    }
+  }catch(_){}
+  finally{SIM.busy=false; SIM._res=null; captionQA=false;}
+}
 $('verifyBtn').onclick=()=>{
   /* mid-run the button is the escape hatch: skip THIS step, keep the mode —
      strict coaching must gate the lesson, not imprison the student */

@@ -1756,20 +1756,29 @@ def graph_ingest():
 MAX_BOOK_PAGES = 100
 MAX_BOOK_CHARS = 55_000        # what one structuring call can actually hold
 
-BOOK_SYS = """You convert instructional books into interactive video lessons. You receive the extracted text of a how-to book. Respond with ONLY strict JSON, no markdown fences, shaped:
+BOOK_SYS = """You convert instructional books into interactive ANIMATED video lessons — the kind a student watches, interrupts mid-play and gets answered from the book itself. You receive the extracted text of a how-to book. Respond with ONLY strict JSON, no markdown fences, shaped:
 {"title": "short course title", "topic": "what is being taught, one phrase",
- "chapters": [ 6-10 chapters, each one of:
-  {"narration":"1-2 conversational spoken sentences teaching the point","title":"short noun phrase","mode":"actions","seconds":14,"actions":[{"text":"One imperative action STARTING WITH THE VERB, from the book","footage":"2-5 words naming the filmable thing"} , 2-4 actions]}
+ "chapters": [ 8-12 chapters, each one of:
+  {"narration":"2-3 conversational spoken sentences teaching the point in the book's own terms","title":"short noun phrase","mode":"actions","seconds":14,"actions":[{"text":"One imperative action STARTING WITH THE VERB, from the book","footage":"2-5 words naming the filmable thing"} , 2-4 actions]}
   {"narration":"...","title":"...","mode":"hand","seconds":10,"hand_steps":["Imperative finger/hand action from the book", 2-4 of them]}
-  {"narration":"...","title":"...","mode":"skeleton","seconds":10,"motion_steps":["Whole-body imperative", ...]}
+  {"narration":"...","title":"...","mode":"skeleton","seconds":12,"motion_steps":["Whole-body imperative from the book", 2-4],"muscles":["glutes","quads"]}
+  {"narration":"...","title":"...","mode":"compose","seconds":12,"parts":[{"kind":"skeleton","title":"posture","steps":["..."],"muscles":["..."]},{"kind":"hand","title":"grip","steps":["..."]}]}
+  {"narration":"...","title":"...","mode":"world","seconds":15,"actors":[{"kind":"skeleton","title":"the body","steps":["..."],"muscles":["..."]},{"kind":"hand","title":"grip","steps":["..."]}]}
   {"narration":"...","title":"...","mode":"anim","seconds":10,"steps":[{"beat":"...","els":[{"type":"box","x":20,"y":30,"w":12,"h":8,"label":"...","color":"blue","in":"pop"}]}]}
  ],
- "howtos": [ 2-6 procedures worth remembering, each {"title":"...","steps":["imperative step", ...]} ]}
+ "howtos": [ 4-8 procedures worth remembering, each {"title":"...","steps":["imperative step", ...]} ]}
 Rules:
-- FOLLOW THE BOOK's own teaching order and use ITS instructions, not your general knowledge. Quote its imperatives nearly verbatim in actions/hand_steps.
-- "hand" chapters for finger technique (grips, fretting, picking). "actions" for physical procedures shown as real film (with concrete filmable footage terms). "skeleton" only for posture/whole-body. "anim" ONLY for genuinely abstract structure (a tuning diagram, a scale chart) — at most 2.
+- FOLLOW THE BOOK's own teaching order and use ITS instructions, not your general knowledge. Quote its imperatives nearly verbatim in actions/hand_steps/motion_steps, keep its names for things, and stay terminologically consistent from chapter to chapter — the student can interrupt at any moment and the answer must match what the screen said.
+- USE THE WHOLE PALETTE — a good lesson MIXES modes, never one mode throughout:
+  "actions" for procedures best shown as real film, with concrete filmable footage terms.
+  "hand" for finger technique (grips, fretting, picking, knots).
+  "skeleton" for posture, whole-body movement and EXERCISE: an animated figure performs the steps, and "muscles" (lowercase names: glutes, quads, hamstrings, calves, core, back, chest, shoulders, biceps, triceps, neck) lights those groups up red-orange on its body while they work — so for a fitness/yoga/dance/sports book make one skeleton chapter PER exercise, motion_steps its reps and cues, muscles the ones the book says it works.
+  "compose" when body and fingers matter at the same time — the panes play side by side.
+  "world" for at least one chapter whenever a body, a tool and an object must be in the right places relative to each other — one 3D room at real scale.
+  "anim" ONLY for genuinely abstract structure (a tuning diagram, a rep scheme chart) — at most 1.
+- Every chapter may also carry "footage": 2-5 words naming real stock film to play behind the rig; use it on most chapters.
 - Coordinates in anim els: 50x50 grid, x1y1 bottom-left, keep 4-46.
-- "howtos" are the book's procedures as numbered-step recipes so a knowledge graph can answer questions about them later. Steps imperative, one action each.
+- "howtos" are the book's procedures as numbered-step recipes so a knowledge graph can answer questions about them later — this is what makes the lesson conversational, so be generous and detailed: every exercise, procedure, form cue and safety warning the book gives, steps imperative, one action each.
 - Everything spoken ("narration") is conversational, as a tutor would say it aloud."""
 
 
@@ -1825,7 +1834,7 @@ def book_lesson():
         r = requests.post(ANTHROPIC_URL, timeout=240, headers={
             "x-api-key": API_KEY, "anthropic-version": "2023-06-01",
             "Content-Type": "application/json"},
-            json={"model": "claude-sonnet-4-6", "max_tokens": 6000,
+            json={"model": "claude-sonnet-4-6", "max_tokens": 9000,
                   "system": BOOK_SYS,
                   "messages": [{"role": "user", "content":
                       f"Book file: {name}\n\n{text}"}]})
@@ -1847,7 +1856,7 @@ def book_lesson():
     # the book's procedures become graph knowledge, so interrupts answer
     # from the book — with its title as the cited source
     ingested = 0
-    for h in (plan.get("howtos") or [])[:8]:
+    for h in (plan.get("howtos") or [])[:12]:
         try:
             steps = [str(s).strip() for s in (h.get("steps") or []) if str(s).strip()]
             if len(steps) < 2:

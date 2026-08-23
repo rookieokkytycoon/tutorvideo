@@ -232,7 +232,7 @@ textarea:focus{outline:2px solid var(--marker);outline-offset:1px;border-color:v
     <div class="row">
       <input id="bookfile" type="file" accept=".pdf,application/pdf" style="display:none">
       <button class="big ghost" id="bookBtn"
-              title="The book replaces the director: its exercises become hand-rig and action-reel chapters in its own teaching order, and its procedures go into the hivemind so interrupting mid-lesson gets answered from what the book actually says.">Upload a book</button>
+              title="The book replaces the director: its exercises become animated chapters in its own teaching order — hand rigs, action reels, 3D rooms, and for exercise books a body figure with the working muscles lit up red — and its procedures go into the hivemind so interrupting mid-lesson gets answered from what the book actually says.">Upload a book</button>
     </div>
     <label for="tube">Mine a how-to — YouTube URL, wikiHow URL, or a topic</label>
     <div class="row">
@@ -1009,6 +1009,73 @@ function drawHud(lines,accent){
   lines.forEach((l,i)=>{ctx.fillStyle=i===0?(accent||'#2456D6'):'#5A5F58';
     ctx.fillText(l,ox+9*k,oy+(fs+6*k)+i*lh);});
 }
+/* --- fitness figure ----------------------------------------------------
+   A book exercise names the muscles it works, so instead of a wire skeleton
+   the body is drawn as flesh — tapered limbs, a filled torso — with the
+   working groups burning red-orange, brighter the faster they move: the
+   anatomy-video look. Everything still runs on the same servo chains; only
+   the paint changes, so tracking, vectors and gestures keep working. */
+const FLESH='#E3E0D8', BURN='#C4402A';
+const MUSCLE_RX=[
+  [/glute|butt|hip/i,       ['leg_l','leg_r','glutes']],
+  [/quad|thigh|hamstring|leg|calf|calv|squat|lunge/i,['leg_l','leg_r']],
+  [/core|ab|oblique/i,      ['spine','torso']],
+  [/back|lat|trap|spine|lumbar|posture/i,['spine']],
+  [/chest|pec/i,            ['torso']],
+  [/shoulder|delt/i,        ['arm_l','arm_r']],
+  [/bicep|tricep|arm|forearm|grip|wrist/i,['arm_l','arm_r']],
+  [/neck/i,                 ['neck']]];
+function muscleRegions(names){
+  const on=new Set();
+  names.forEach(n=>MUSCLE_RX.forEach(([rx,regs])=>{
+    if(rx.test(String(n)))regs.forEach(r=>on.add(r));}));
+  /* a muscle name the map does not know still deserves a working body */
+  if(!on.size)['leg_l','leg_r','arm_l','arm_r','spine'].forEach(r=>on.add(r));
+  return on;
+}
+function burnTint(heat){
+  const t=0.55+0.45*Math.max(0,Math.min(1,heat)), a=[227,224,216],b=[196,64,42];
+  return `rgb(${a.map((v,i)=>Math.round(v+(b[i]-v)*t)).join(',')})`;
+}
+const CHAIN_JOINTS={arm_l:['shoulder_l','elbow_l','wrist_l'],
+                    arm_r:['shoulder_r','elbow_r','wrist_r'],
+                    leg_l:['hip_l','knee_l','ankle_l'],
+                    leg_r:['hip_r','knee_r','ankle_r'],
+                    spine:['hip_l','hip_r','shoulder_l','shoulder_r'],
+                    neck:['nose']};
+const CHAIN_W={spine:[15,11],neck:[6.5,5],arm_l:[8.5,4.5],arm_r:[8.5,4.5],
+               leg_l:[12,5.5],leg_r:[12,5.5]};
+function chainHeat(k,vel,JI){
+  const js=CHAIN_JOINTS[k]||[]; if(!js.length)return 0;
+  const s=js.reduce((a,nm)=>a+V.len(vel[JI[nm]]||[0,0,0]),0)/js.length;
+  return Math.min(1,s/0.7);
+}
+function muscleChain(pts,cam,w0,w1,color,glow){
+  for(let i=0;i<pts.length-1;i++){
+    const w=w0+(w1-w0)*(i/(pts.length-1));
+    const a=pxOf(pts[i],cam),q=pxOf(pts[i+1],cam);
+    const passes=glow?[['rgba(196,64,42,.25)',w+8]]:[];
+    passes.push(['rgba(20,20,18,.5)',w+2.4],[color,w]);
+    passes.forEach(([c,lw])=>{
+      ctx.strokeStyle=c;ctx.lineWidth=D(lw);ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();});
+  }
+}
+function drawTorso(pos,JI,cam,burn,vel){
+  const P=nm=>pos[JI[nm]];
+  const quad=['shoulder_l','shoulder_r','hip_r','hip_l'].map(nm=>pxOf(P(nm),cam));
+  ctx.fillStyle=burn.has('torso')?burnTint(chainHeat('spine',vel,JI)):FLESH;
+  ctx.strokeStyle='rgba(20,20,18,.5)';ctx.lineWidth=D(2.4);ctx.lineJoin='round';
+  ctx.beginPath();quad.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.closePath();ctx.fill();ctx.stroke();
+}
+function drawGlutes(pos,JI,cam,scl){
+  const m=V.mul(V.add(pos[JI.hip_l],pos[JI.hip_r]),0.5), q=pxOf(m,cam);
+  ctx.fillStyle=burnTint(0.85);ctx.strokeStyle='rgba(20,20,18,.5)';
+  ctx.lineWidth=D(2);
+  ctx.beginPath();ctx.ellipse(q[0],q[1],scl*1.5,scl*1.0,0,0,7);
+  ctx.fill();ctx.stroke();
+}
 function drawSkeleton(clip,t){
   const cam=clip.camera, n=clip.frames.length;
   const fi=Math.max(0,Math.min(n-1,Math.floor(t*clip.fps)));
@@ -1024,15 +1091,25 @@ function drawSkeleton(clip,t){
 
   /* every limb is an actuated curve: FK the servo angles back into shape */
   const paths=ctrlPaths(pos,JI);
+  const burn=Array.isArray(clip.muscles)&&clip.muscles.length
+    ?muscleRegions(clip.muscles):null;
+  if(burn)drawTorso(pos,JI,cam,burn,vel);        /* limbs overlap the torso */
   for(const k in clip.chains){
     const ch=clip.chains[k]; if(!ch.angles||!ch.angles[fi])continue;
     const base=paths[k]?paths[k][0]:[0,0,0];
     const pts=fkChain(ch.angles[fi],ch.device,base,paths[k]&&chainHeading(paths[k]));
-    strokePath(pts,cam,'#141412',D(k.startsWith('arm')?4.2:3.4),true);
-    ctx.fillStyle='#2456D6';                       /* one dot per servo */
-    pts.forEach((p,i)=>{if(i===0||i===pts.length-1)return;
-      const q=pxOf(p,cam);ctx.beginPath();ctx.arc(q[0],q[1],D(1.8),0,7);ctx.fill();});
+    if(burn){
+      const on=burn.has(k), heat=chainHeat(k,vel,JI);
+      const w=CHAIN_W[k]||[8,5];
+      muscleChain(pts,cam,w[0],w[1],on?burnTint(heat):FLESH,on&&heat>0.25);
+    }else{
+      strokePath(pts,cam,'#141412',D(k.startsWith('arm')?4.2:3.4),true);
+      ctx.fillStyle='#2456D6';                     /* one dot per servo */
+      pts.forEach((p,i)=>{if(i===0||i===pts.length-1)return;
+        const q=pxOf(p,cam);ctx.beginPath();ctx.arc(q[0],q[1],D(1.8),0,7);ctx.fill();});
+    }
   }
+  if(burn&&burn.has('glutes'))drawGlutes(pos,JI,cam,sc);
   if(clip.constraint&&clip.constraint.points[fi])          /* LineFORM Fig. 9 */
     strokePath(clip.constraint.points[fi],cam,'#1F9E7A',D(3.2),true);
 
@@ -1040,9 +1117,11 @@ function drawSkeleton(clip,t){
   const head=pxOf(pos[JI.nose],cam);
   ctx.strokeStyle='#141412';ctx.lineWidth=D(3);ctx.fillStyle='#FDFDF8';
   ctx.beginPath();ctx.arc(head[0],head[1],sc*1.15,0,7);ctx.fill();ctx.stroke();
-  ctx.fillStyle='#C93A2E';
-  ['wrist_l','wrist_r','elbow_l','elbow_r'].forEach(nm=>{
-    const q=pxOf(pos[JI[nm]],cam);ctx.beginPath();ctx.arc(q[0],q[1],D(3.4),0,7);ctx.fill();});
+  if(!burn){                     /* tracker dots read as hardware, not flesh */
+    ctx.fillStyle='#C93A2E';
+    ['wrist_l','wrist_r','elbow_l','elbow_r'].forEach(nm=>{
+      const q=pxOf(pos[JI[nm]],cam);ctx.beginPath();ctx.arc(q[0],q[1],D(3.4),0,7);ctx.fill();});
+  }
 
   /* MediaPipe-style fingers on whichever hand is acting — suppressed when a
      detailed hand actor is bound to this wrist, since that IS this hand */
@@ -1077,11 +1156,12 @@ function drawSkeleton(clip,t){
   const ges=(clip.gestures||[]).find(g=>t>=g.start&&t<g.end);
   const sp=V.len(vel[JI.wrist_r]);
   drawHud([
+    burn?`working: ${clip.muscles.slice(0,5).join(', ')}`:'',
     ges?`gesture: ${ges.name}  (${ges.hand}, conf ${ges.conf})`:'gesture: —',
     seg?`step ${seg.step}: ${seg.primitive}`:'',
     `wrist ${sp.toFixed(2)} m/s   frame ${fi+1}/${n}`,
     `${Object.keys(clip.chains).length} actuated curve chains`
-  ].filter(Boolean),'#C93A2E');
+  ].filter(Boolean),burn?BURN:'#C93A2E');
 }
 function drawHandClip(clip,t){
   /* Five finger chains, drawn from the servo angles the way the body is.
@@ -2759,7 +2839,10 @@ function composeParts(sc){
     else{o.steps=p.steps||p.hand_steps||p.motion_steps||[];
       if(p.question)o.question=p.question;
       if(p.yaw!=null)o.yaw=p.yaw;
-      if(k==="skeleton"&&p.constraint)o.constraint=true;}
+      if(k==="skeleton"&&p.constraint)o.constraint=true;
+      /* a book exercise names the muscles it works — the figure burns them */
+      if(k==="skeleton"&&Array.isArray(p.muscles)&&p.muscles.length)
+        o.muscles=p.muscles.slice(0,8).map(String);}
     return o;
   });
 }
@@ -2853,6 +2936,16 @@ function ensureClip(sc,quiet){
       if(r.ok&&(d.frames||(d.kind==='compose'&&d.parts&&d.parts.length)
                         ||(d.kind==='world'&&d.actors&&d.actors.length))){
         sc.clip=d;
+        /* the working-muscle list rides on the request, not the maths server —
+           copy it back onto the returned clips so the renderer can burn them */
+        if(m==="skeleton"&&Array.isArray(sc.muscles)&&sc.muscles.length)
+          d.muscles=sc.muscles.slice(0,8).map(String);
+        const mspec=m==="compose"?body.parts:m==="world"?body.actors:null;
+        const mgot =m==="compose"?d.parts  :m==="world"?d.actors  :null;
+        if(mspec&&mgot)mgot.forEach((c,i)=>{
+          const s=mspec[i];
+          if(s&&c.kind==="skeleton"&&Array.isArray(s.muscles)&&s.muscles.length)
+            c.muscles=s.muscles;});
         const note=m==="world"
           ?'&#9634; room ready — '+d.actors.map(a=>(PANE_LABEL[a.kind]||a.kind)
              +(a.bind?' (bound to '+a.bind.actor+')':'')).join(' + ')

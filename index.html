@@ -3329,6 +3329,47 @@ async function liveCutActions(sc,acts,quiet){
      +`with the actions`+(quiet?' (prefetched)':'')
     :'no action footage'+(d.why?' ('+d.why+')':''));
 }
+async function reelUpgrade(sc,acts){
+  /* MoneyPrinterTurbo composing the ANSWER, behind the live cut that is
+     already playing: /api/reel speaks each step with the neural voice,
+     trims its stock shot to exactly the sentence's measured length, burns
+     the step in as that shot's subtitle (MPT's font, outline, position)
+     and joins the shots with its fade — one mp4, voice muxed in. The
+     chapter is upgraded IN PLACE when the file lands; the next play of
+     it (a click on the chapter, a verify demo loop) is the composed
+     edit. Never awaited, so the answer is never delayed by ffmpeg. */
+  if(sc._reelUp||sc.reelVideo)return; sc._reelUp=true;
+  try{
+    const r=await fetch("/api/reel",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({actions:acts,lang:lessonLang})});
+    const d=await r.json();
+    if(!d.job)return;                       /* no MPT on this server: fine */
+    for(let n=0;n<150;n++){                              /* up to ~5 min */
+      await new Promise(z=>setTimeout(z,2000));
+      const s=await (await fetch("/api/reel/status?job="
+                                 +encodeURIComponent(d.job))).json();
+      if(s.state==="done"&&s.video){
+        /* sc.reel (the live cut's cues) is left ALONE — this scene may be
+           mid-play on those clips right now. The composed file wins on
+           the next play, where the "edited" path checks reelVideo only. */
+        sc.reelVideo=s.video; sc.reelCues=s.cues||[];
+        if(s.seconds)sc.seconds=Math.max(sc.seconds||0,s.seconds);
+        chatMsg('sys','&#9635; MoneyPrinterTurbo finished the composed edit '
+          +'of the answer — replay "'+sceneName(sc)+'" to watch it: '
+          +(s.cues||[]).length+' shots, each held exactly as long as its '
+          +'step is spoken, subtitles burned in');
+        renderSceneList();
+        return;
+      }
+      if(s.state==="error"){
+        chatMsg('sys','the answer\'s composed edit failed ('
+          +(s.error||'unknown')+') — the live cut stands');
+        return;
+      }
+    }
+  }catch(_){}
+}
 function ensureActions(sc,quiet){
   if(sc.reel!==undefined)return sc._reelJob||Promise.resolve();
   if(sc._reelJob)return sc._reelJob;
@@ -3343,13 +3384,17 @@ function ensureActions(sc,quiet){
   sc._reelJob=(async()=>{
     try{
       /* An answer cannot keep the student waiting on ffmpeg. A chapter the
-         TUTOR inserts mid-conversation skips the server edit and goes
-         straight to the live cut — clips in seconds, rig on top, and the
-         narration loop still forces every cut to the action being spoken.
-         Only director-planned chapters get the composed reel. */
+         TUTOR inserts mid-conversation goes straight to the live cut —
+         clips in seconds, rig on top, narration forcing every cut to the
+         action being spoken — while MoneyPrinterTurbo composes the REAL
+         edit of the same answer in the background: each step spoken by
+         the neural voice, its shot trimmed to exactly that sentence, the
+         step burned in as its subtitle. When the file lands, the chapter
+         upgrades in place — replay it to watch the composed version. */
       if(sc.qa){
         await liveCutActions(sc,acts,quiet);
         try{await ensureRigOverlay(sc);}catch(e){}
+        reelUpgrade(sc,acts);            /* fire and forget, never awaited */
         return;
       }
       if(!quiet){$('status').textContent=

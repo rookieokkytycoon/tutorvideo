@@ -1368,6 +1368,19 @@ def coach_open():
     steps = p.get("steps") or p.get("text") or ""
     title = str(p.get("title", ""))[:120]
     source = ""
+    # PRECISE verification: the page can send back the EXACT solved clip a
+    # chapter just demonstrated, and the reference is reduced from THAT
+    # motion — the student is graded against the very frames they watched,
+    # not a fresh synthesis that might phrase the movement differently.
+    sent = p.get("clip")
+    if isinstance(sent, dict) and isinstance(sent.get("frames"), list) \
+            and len(sent.get("frames") or []) >= 2:
+        try:
+            ref = coach.reference(sent)
+            ref["precise"] = True
+            return jsonify({"clip": sent, "reference": ref})
+        except Exception:
+            pass                 # malformed clip: fall back to synthesis
     # Prefer the graph — a real procedure beats one synthesised from a
     # sentence — but only on a CONFIDENT match. Retrieval ranks, it does not
     # threshold, so a topic the hivemind has never heard of still comes back

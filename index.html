@@ -3677,6 +3677,19 @@ $('bookfile').onchange=async e=>{
      to the same continuous live lesson. A channel of instruction, not a
      pile of separate lessons. */
   $('bookBtn').disabled=true;
+  /* a book tutorial is a curriculum to be FOLLOWED, not watched: uploading
+     one arms strict coach-verify, so every step of every chapter must be
+     performed on camera before the lesson proceeds. One click on the
+     Coach-verify button relaxes it back to watch-only. */
+  if(!VERIFY.on){
+    VERIFY.on=true; VERIFY.strict=true;
+    $('verifyBtn').textContent='Coach-verify';
+    $('verifyBtn').setAttribute('aria-pressed','true');
+    chatMsg('sys','&#9673; book tutorial — COACH-VERIFY armed: each step is '
+      +'performed on camera, graded against the exact demonstrated motion, '
+      +'and the lesson proceeds only when it lands. Click "Coach-verify" '
+      +'to relax it.');
+  }
   if(files.length>1)
     chatMsg('sys','&#128218; '+files.length+' books queued — each becomes a '
            +'segment of one continuous lesson');
@@ -4837,8 +4850,9 @@ function lnnInputs(deltas,score,seen){
 
 const VERIFY={on:false,strict:false,active:false,busy:false,
   cam:null,video:null,pose:null,hander:null,
-  ref:null,steps:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
-  live:null,lm:null,score:0,cues:[],per:[],done:null,round:0,log:[]};
+  ref:null,steps:[],refIdx:[],si:0,hold:0,lastT:0,stepT0:0,lastVT:-1,
+  live:null,lm:null,handLm:null,handPrev:null,handPrevAt:0,handScore:0,
+  score:0,cues:[],per:[],done:null,round:0,log:[]};
 /* The adaptive part, in the spirit of liquid networks: the pass threshold
    per action is a parameter that keeps adapting to THIS student while they
    practice. Every failed round eases the band a little (floor 60, so it
@@ -4848,14 +4862,14 @@ const VERIFY={on:false,strict:false,active:false,busy:false,
 const VERIFY_ADAPT=new Map();
 function verifyNeed(){
   const base=(VERIFY.ref&&VERIFY.ref.pass)||78;
-  const key=VERIFY.steps[VERIFY.si]||'';
+  const key=(VERIFY.steps[VERIFY.si]||{}).text||'';
   return Math.max(60,base-(VERIFY_ADAPT.get(key)||0)-VERIFY.round*4);
 }
 function verifyEscalate(now){
   /* strict coaching: a timed-out round does NOT move on — it eases the
      band, resets the clock and sends the tracked faults to the coach */
   VERIFY.round++; VERIFY.stepT0=now; VERIFY.hold=0;
-  const key=VERIFY.steps[VERIFY.si]||'';
+  const key=(VERIFY.steps[VERIFY.si]||{}).text||'';
   VERIFY_ADAPT.set(key,Math.min(12,(VERIFY_ADAPT.get(key)||0)+3));
   verifyCoachHint(key);
 }
@@ -4901,12 +4915,22 @@ const VERIFY_BONES=[["shoulder_l","shoulder_r"],["hip_l","hip_r"],
   ["hip_r","knee_r"],["knee_r","ankle_r"]];
 const VERIFY_STEP_MS=20000, VERIFY_HOLD_MS=850;
 function verifySteps(sc){
+  /* EVERY performable step in the chapter, typed by how the camera checks
+     it: whole-body steps by joint-angle bands, hand steps by tracked hand
+     activity, and a film chapter's actions as body movements — the same
+     way a typed how-to is coached. Nothing performable goes unverified. */
   const out=[];
-  if(Array.isArray(sc.motion_steps))out.push(...sc.motion_steps);
+  const add=(list,kind)=>{(list||[]).forEach(s=>{
+    const t=String(s&&s.text!==undefined?s.text:(s||'')).trim();
+    if(t)out.push({text:t,kind:kind});});};
+  add(sc.motion_steps,'body');
+  add(sc.hand_steps,'hand');
+  if(sc.mode==='actions')add((sc.actions||[]).map(a=>a&&a.text),'body');
   (sc.parts||sc.actors||[]).forEach(p=>{
-    if((p.kind==='skeleton'||p.kind==='body')&&Array.isArray(p.steps))
-      out.push(...p.steps);});
-  return out.map(s=>String(s)).filter(Boolean).slice(0,6);
+    if(!p||!Array.isArray(p.steps))return;
+    if(p.kind==='skeleton'||p.kind==='body')add(p.steps,'body');
+    if(p.kind==='hand')add(p.steps,'hand');});
+  return out.slice(0,8);
 }
 async function verifyCamera(){
   if(VERIFY.video)return;
@@ -4933,15 +4957,25 @@ async function verifyChapter(sc){
   if(!steps.length||VERIFY.busy)return;
   VERIFY.busy=true;
   try{
-    /* the reference is THIS chapter's own steps — the student is graded
-       against what was just demonstrated, not a generic exercise */
-    const r=await fetch("/api/coach",{method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({steps:steps,title:sceneName(sc),
-                           seconds:Math.min(16,4+steps.length*4)})});
-    const d=await r.json();
-    if(!r.ok||!d.reference)
-      throw new Error((d.error&&d.error.message)||"no reference");
+    const bodySteps=steps.filter(s=>s.kind==='body');
+    /* PRECISE: the reference is reduced from the EXACT solved clip this
+       chapter just performed — the very frames the student watched — and
+       only synthesised from step text when there is no clip to reuse */
+    const demo=sc.clip&&(sc.clip.kind==='skeleton'?sc.clip
+      :((sc.clip.parts||sc.clip.actors||[])
+        .find(p=>p&&p.kind==='skeleton'&&p.frames)||null));
+    let d=null;
+    if(bodySteps.length){
+      const r=await fetch("/api/coach",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(demo&&demo.frames&&demo.frames.length>1
+          ?{clip:demo,title:sceneName(sc)}
+          :{steps:bodySteps.map(s=>s.text),title:sceneName(sc),
+            seconds:Math.min(16,4+bodySteps.length*4)})});
+      d=await r.json();
+      if(!r.ok||!d.reference)
+        throw new Error((d.error&&d.error.message)||"no reference");
+    }
     /* the lesson may have been stopped while we were waiting — a parked
        verify must not hold a dead lesson's slot open forever */
     if(lessonAbort)throw new Error("lesson stopped");
@@ -4949,16 +4983,23 @@ async function verifyChapter(sc){
     if(lessonAbort)throw new Error("lesson stopped");
     /* borrow the coach's scoring seat so the SAME definitions grade this —
        coaching and a lesson never run at the same time, so it is free */
-    COACH.spec=d.reference; COACH.ref=d.reference;
-    VERIFY.ref=d.reference; VERIFY.steps=steps; VERIFY.si=0;
+    if(d){COACH.spec=d.reference; COACH.ref=d.reference;
+          VERIFY.ref=d.reference;}
+    else VERIFY.ref=null;               /* hand-only chapter: no bands */
+    /* each body step maps to its slot in the reference, in order; a hand
+       step has no angle bands — the hand tracker checks it instead */
+    let bi=0; VERIFY.refIdx=steps.map(s=>s.kind==='body'?bi++:-1);
+    VERIFY.steps=steps; VERIFY.si=0;
     VERIFY.hold=0; VERIFY.lastVT=-1; VERIFY.live=null; VERIFY.lm=null;
+    VERIFY.handLm=null; VERIFY.handPrev=null; VERIFY.handScore=0;
     VERIFY.score=0; VERIFY.cues=[]; VERIFY.round=0;
     VERIFY.per=steps.map(()=>({best:0,ok:false,rounds:0}));
     lnnReset();               /* fresh liquid state, same earned readout */
     VERIFY.lastT=VERIFY.stepT0=performance.now();
-    captionText="Your turn — "+steps[0]; captionQA=false;
-    if(voiceOn)speak("Your turn. "+steps[0]
-                    +". Stand back so the camera sees all of you.");
+    captionText="Your turn — "+steps[0].text; captionQA=false;
+    if(voiceOn)speak("Your turn. "+steps[0].text
+      +(steps[0].kind==='hand'?". Bring your hand close to the camera."
+        :". Stand back so the camera sees all of you."));
     setBadge('coach');
     const out=await new Promise(res=>{VERIFY.done=res; VERIFY.active=true;});
     VERIFY.active=false; VERIFY.done=null;
@@ -4973,6 +5014,8 @@ async function verifyChapter(sc){
         ?'&#10003; verified through the camera — '
         :'&#9678; camera check: ')
       +hit+'/'+out.per.length+' step(s) hit, best score '+best
+      +(d&&d.reference&&d.reference.precise
+        ?' — graded against the exact demonstrated motion':'')
       +(extra?', '+extra+' coached round'+(extra>1?'s':'')
         +' — the pass band adapted to you':'')
       +(hit===out.per.length?'':' — moving on; ask and it will re-explain'));
@@ -4984,7 +5027,7 @@ async function verifyChapter(sc){
   }finally{VERIFY.busy=false; lnnSave();}
 }
 function verifyNext(hit){
-  const per=VERIFY.per, key=VERIFY.steps[VERIFY.si]||'';
+  const per=VERIFY.per, key=(VERIFY.steps[VERIFY.si]||{}).text||'';
   per[VERIFY.si].ok=per[VERIFY.si].ok||hit;
   per[VERIFY.si].rounds=VERIFY.round;
   /* a clean first-round pass earns the band back — adaptation flows both
@@ -4993,43 +5036,83 @@ function verifyNext(hit){
     VERIFY_ADAPT.set(key,Math.max(0,(VERIFY_ADAPT.get(key)||0)-2));
   VERIFY.round=0;
   VERIFY.si++; VERIFY.hold=0; VERIFY.stepT0=performance.now();
+  VERIFY.handPrev=null;               /* a new step starts its own motion */
   if(VERIFY.si>=VERIFY.steps.length){
     if(VERIFY.done)VERIFY.done({per:per});
     return;
   }
-  captionText="Your turn — "+VERIFY.steps[VERIFY.si];
-  if(voiceOn)speak((hit?"Good. ":"Moving on. ")+VERIFY.steps[VERIFY.si]);
+  const st=VERIFY.steps[VERIFY.si];
+  captionText="Your turn — "+st.text;
+  if(voiceOn)speak((hit?"Good. ":"Moving on. ")+st.text
+    +(st.kind==='hand'?" Bring your hand close to the camera.":""));
 }
 function verifyTick(now){
   const v=VERIFY.video; if(!v)return;
-  if(v.currentTime!==VERIFY.lastVT&&VERIFY.pose){
+  const st=VERIFY.steps[VERIFY.si]||null;
+  if(v.currentTime!==VERIFY.lastVT&&st){
     VERIFY.lastVT=v.currentTime;
-    try{
-      const out=VERIFY.pose.detectForVideo(v,now);
-      const wl=out.worldLandmarks&&out.worldLandmarks[0];
-      const il=out.landmarks&&out.landmarks[0];
-      if(wl&&il){VERIFY.live=coachAngles(coachFrame(wl),coachVis(il));
-                 VERIFY.lm=il;}
-      else{VERIFY.live=null;VERIFY.lm=null;}
-    }catch(_){}
+    if(st.kind==='hand'&&VERIFY.hander){
+      /* a hand step is checked by the HAND tracker: the hand must be in
+         frame and actually working — presence earns half the score, real
+         fingertip/wrist motion earns the rest. An activity check, honest
+         about being one: form grading is the body path's job. */
+      try{
+        const out=VERIFY.hander.detectForVideo(v,now);
+        const lm=out.landmarks&&out.landmarks[0];
+        VERIFY.handLm=lm||null; VERIFY.lm=null; VERIFY.live=null;
+        if(lm){
+          const p=lm[8], wr=lm[0];
+          if(VERIFY.handPrev){
+            const dt=Math.max((now-VERIFY.handPrevAt)/1000,1e-3);
+            const sp=(Math.hypot(p.x-VERIFY.handPrev[0],
+                                 p.y-VERIFY.handPrev[1])
+                     +Math.hypot(wr.x-VERIFY.handPrev[2],
+                                 wr.y-VERIFY.handPrev[3]))/dt;
+            VERIFY.handScore=Math.round(Math.min(100,55+sp*280));
+          }else VERIFY.handScore=55;
+          VERIFY.handPrev=[p.x,p.y,wr.x,wr.y]; VERIFY.handPrevAt=now;
+        }else{VERIFY.handScore=0;VERIFY.handPrev=null;}
+      }catch(_){}
+    }else if(VERIFY.pose){
+      try{
+        const out=VERIFY.pose.detectForVideo(v,now);
+        const wl=out.worldLandmarks&&out.worldLandmarks[0];
+        const il=out.landmarks&&out.landmarks[0];
+        if(wl&&il){VERIFY.live=coachAngles(coachFrame(wl),coachVis(il));
+                   VERIFY.lm=il;}
+        else{VERIFY.live=null;VERIFY.lm=null;}
+        VERIFY.handLm=null;
+      }catch(_){}
+    }
   }
-  if(VERIFY.live&&VERIFY.si<VERIFY.steps.length){
-    const s=scorePose(VERIFY.live,
-      VERIFY.ref.steps[Math.min(VERIFY.si,VERIFY.ref.steps.length-1)]);
-    VERIFY.score=s.score; VERIFY.cues=s.cues||[];
-    VERIFY.per[VERIFY.si].best=Math.max(VERIFY.per[VERIFY.si].best,s.score);
-    const landing=s.score>=verifyNeed();
-    /* the liquid network watches the same frames, taught by the physics */
-    const conf=lnnStep(lnnInputs(s.deltas,s.score,true),
-                       (now-VERIFY.lastT)/1000,landing?1:0);
-    if(landing){VERIFY.hold+=now-VERIFY.lastT;
-      if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
-    }else if(conf<0.6)VERIFY.hold=0;
-    /* conf >= 0.6: the liquid state bridges a flicker — one bad tracker
-       frame no longer zeroes a nearly-held pose; the hold is kept, not
-       grown, so the pass still requires real held frames */
-  }else if(VERIFY.si<VERIFY.steps.length){
-    lnnStep(lnnInputs(null,0,false),(now-VERIFY.lastT)/1000,null);
+  if(st){
+    let sc100=null,cues=[],deltas=null,seen=false;
+    if(st.kind==='hand'){
+      sc100=VERIFY.handScore|0; seen=!!VERIFY.handLm;
+      cues=seen?[]:[{label:'hand',
+        text:'show your working hand to the camera',off:0}];
+    }else if(VERIFY.live&&VERIFY.ref){
+      const ri=Math.max(0,Math.min(VERIFY.refIdx[VERIFY.si]||0,
+                                   VERIFY.ref.steps.length-1));
+      const s=scorePose(VERIFY.live,VERIFY.ref.steps[ri]);
+      sc100=s.score; cues=s.cues||[]; deltas=s.deltas; seen=true;
+    }
+    if(sc100!=null){
+      VERIFY.score=sc100; VERIFY.cues=cues;
+      VERIFY.per[VERIFY.si].best=Math.max(VERIFY.per[VERIFY.si].best,sc100);
+      const landing=sc100>=verifyNeed();
+      /* the liquid network watches the same frames, taught by the physics */
+      const conf=lnnStep(lnnInputs(deltas,sc100,seen),
+                         (now-VERIFY.lastT)/1000,landing?1:0);
+      if(landing){VERIFY.hold+=now-VERIFY.lastT;
+        if(VERIFY.hold>VERIFY_HOLD_MS)verifyNext(true);
+      }else if(conf<0.6)VERIFY.hold=0;
+      /* conf >= 0.6: the liquid state bridges a flicker — one bad tracker
+         frame no longer zeroes a nearly-held pose; the hold is kept, not
+         grown, so the pass still requires real held frames */
+    }else{
+      lnnStep(lnnInputs(null,0,false),(now-VERIFY.lastT)/1000,null);
+    }
   }
   if(VERIFY.si<VERIFY.steps.length&&now-VERIFY.stepT0>VERIFY_STEP_MS){
     /* strict coaching gates progression: the lesson proceeds ONLY when the
@@ -5071,6 +5154,23 @@ function verifyRender(now){
       Object.keys(bp).forEach(nm=>{const p=px(nm); if(!p)return;
         ctx.beginPath();ctx.arc(p[0],p[1],4,0,7);ctx.fill();});
     }
+    /* a hand step shows the tracked HAND instead: 21 landmarks, five
+       finger chains, mirrored with the picture */
+    else if(VERIFY.handLm){
+      const FING=[[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],
+                  [0,13,14,15,16],[0,17,18,19,20]];
+      const hp=i=>{const p=VERIFY.handLm[i];
+        return p?[x+(1-p.x)*vw,y+p.y*vh]:null;};
+      ctx.strokeStyle='rgba(31,158,122,.95)';ctx.lineWidth=3;
+      ctx.lineCap='round';
+      FING.forEach(ch=>{ctx.beginPath();let started=false;
+        ch.forEach(i=>{const p=hp(i);if(!p)return;
+          started?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);started=true;});
+        ctx.stroke();});
+      ctx.fillStyle='#1F9E7A';
+      VERIFY.handLm.forEach((_,i)=>{const p=hp(i);if(!p)return;
+        ctx.beginPath();ctx.arc(p[0],p[1],3.2,0,7);ctx.fill();});
+    }
     ctx.strokeStyle='rgba(253,253,248,.5)';ctx.lineWidth=2;
     ctx.strokeRect(x,y,vw,vh);
   }
@@ -5079,11 +5179,16 @@ function verifyRender(now){
   ctx.textBaseline='alphabetic';
   ctx.fillStyle=ok?'#1F9E7A':'#E0A32E';
   ctx.fillText(String(VERIFY.score),18,54);
+  const curKind=(VERIFY.steps[Math.min(VERIFY.si,VERIFY.steps.length-1)]
+                 ||{}).kind||'body';
   ctx.font='13px "IBM Plex Mono",monospace';ctx.fillStyle='#FDFDF8';
   ctx.fillText('step '+Math.min(VERIFY.si+1,VERIFY.steps.length)+'/'
     +VERIFY.steps.length+'   need '+verifyNeed()
     +(VERIFY.round?'   round '+(VERIFY.round+1):'')
-    +(VERIFY.lm?'':'   -   step back, no body in view'),18,76);
+    +(VERIFY.ref&&VERIFY.ref.precise?'   precise':'')
+    +(curKind==='hand'
+      ?(VERIFY.handLm?'':'   -   show your hand to the camera')
+      :(VERIFY.lm?'':'   -   step back, no body in view')),18,76);
   (VERIFY.cues||[]).slice(0,2).forEach((c,i)=>{
     ctx.fillStyle='#E0A32E';
     ctx.fillText(c.text+' ('+c.off+'°)',18,98+i*18);});

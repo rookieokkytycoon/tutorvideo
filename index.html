@@ -2203,18 +2203,24 @@ function reelAt(t){
   if(i!==REEL.idx){               /* the cut */
     REEL.idx=i;
     REEL.els.forEach((el,url)=>{if(url!==cue.url)el.pause();});
-    if(v){try{v.currentTime=0;}catch(_){ } v.play().catch(()=>{});}
+    /* cut in where the vision pass said the action shows best, not at t=0 */
+    if(v){try{v.currentTime=cue.t0||0;}catch(_){ } v.play().catch(()=>{});}
   }
   REEL.cur=cue;      /* the action currently on film, for the label */
   return {el:(v&&v.readyState>=2)?v:null,cue:cue};
 }
-function setSceneMedia(videoUrl,imgUrl){
+function setSceneMedia(videoUrl,imgUrl,start){
   if(player.videoEl){player.videoEl.pause();player.videoEl.src="";player.videoEl=null;}
   player.imgEl=null;
   if(videoUrl){
     const v=document.createElement('video');
     v.crossOrigin="anonymous";v.muted=true;v.loop=true;v.playsInline=true;
-    v.src=MEDIA(videoUrl);v.play().catch(()=>{});
+    v.src=MEDIA(videoUrl);
+    /* open on the moment the vision pass said the subject shows best */
+    if(start>0)v.addEventListener('loadedmetadata',()=>{
+      try{if(start<(v.duration||0)-1)v.currentTime=start;}catch(_){ }},
+      {once:true});
+    v.play().catch(()=>{});
     player.videoEl=v;
   }else if(imgUrl){
     const im=new Image(); im.crossOrigin="anonymous"; im.src=MEDIA(imgUrl);
@@ -2223,7 +2229,7 @@ function setSceneMedia(videoUrl,imgUrl){
 }
 function playScene(sc,ms){
   return new Promise(res=>{
-    setSceneMedia(sc.videoUrl||null,sc.imageUrl||null);
+    setSceneMedia(sc.videoUrl||null,sc.imageUrl||null,sc.videoStart||0);
     if(sc.reelVideo&&player.videoEl&&sc.videoUrl===sc.reelVideo){
       /* the edited reel SPEAKS — its narration is in the file — so it plays
          with sound and runs once instead of looping: a loop would restart
@@ -2758,10 +2764,13 @@ Student's question: ${q}`;
           const fd=await fr.json();
           const furl=(fr.ok&&Array.isArray(fd.videos))?fd.videos[0]:null;
           if(furl){
-            setSceneMedia(furl,null);
+            const ft0=(fd.starts||[])[0]||0;
+            setSceneMedia(furl,null,ft0);
             /* keep it on the chapter so resuming does not throw it away */
-            const cur=scenes[currentScene]; if(cur)cur.videoUrl=furl;
-            chatMsg('sys','&#9635; real footage — &ldquo;'+fterm+'&rdquo;');
+            const cur=scenes[currentScene];
+            if(cur){cur.videoUrl=furl;cur.videoStart=ft0;}
+            chatMsg('sys','&#9635; real footage — &ldquo;'+fterm+'&rdquo;'
+              +((fd.verified||[])[0]===true?' (visually checked)':''));
           }else chatMsg('sys','no footage for &ldquo;'+fterm+'&rdquo;'
                              +(fd.why?' ('+fd.why+')':''));
         }catch(e){}
@@ -3106,11 +3115,15 @@ function ensureStepVideos(sc,quiet){
             body:JSON.stringify({prompts:cues.map(c=>c.prompt)})});
       const d=await r.json();
       const urls=(r.ok&&Array.isArray(d.videos))?d.videos:[];
-      sc.reel=cues.map((c,i)=>({...c,url:urls[i]||null})).filter(c=>c.url);
+      sc.reel=cues.map((c,i)=>({...c,url:urls[i]||null,
+                                t0:(d.starts||[])[i]||0}))
+                  .filter(c=>c.url);
       const err=(d.errors||[]).find(Boolean);
       const what=stock?`real clips (${d.source||"stock"})`:"step clips";
+      const nver=(d.verified||[]).filter(v=>v===true).length;
       chatMsg('sys',sc.reel.length
-        ?`&#9635; ${sc.reel.length}/${cues.length} ${what} ready — the `
+        ?`&#9635; ${sc.reel.length}/${cues.length} ${what} ready`
+         +(nver?`, ${nver} visually checked against the step`:'')+` — the `
          +`screen cuts with the steps`+(quiet?' (prefetched)':'')
         :what+' unavailable'+(err?' ('+err+')':
             d.why?' ('+d.why+')':d.error?' ('+d.error.message+')':''));
@@ -3355,7 +3368,7 @@ function actionList(sc){
                      footage:String(a.footage||"")})
             .filter(a=>a.text.trim()).slice(0,6);
 }
-function actionCues(sc,urls){
+function actionCues(sc,urls,starts){
   const acts=actionList(sc), total=Math.max(4,sc.seconds||10);
   const weight=acts.map(a=>Math.max(3,a.text.split(/\s+/).length));
   const sum=weight.reduce((x,y)=>x+y,0)||1;
@@ -3364,6 +3377,7 @@ function actionCues(sc,urls){
     const d=total*weight[i]/sum;
     const cue={start:t,end:(i===acts.length-1?total:t+d),
                ai:i,                       /* which action this clip is OF */
+               t0:(starts||[])[i]||0,      /* where the action shows best */
                text:a.text,url:urls[i]||null};
     t+=d; return cue;
   }).filter(c=>c.url);
@@ -3376,10 +3390,12 @@ async function liveCutActions(sc,acts,quiet){
     body:JSON.stringify({terms:acts.map(a=>a.footage||a.text),seconds:4})});
   const d=await r.json();
   const urls=(r.ok&&Array.isArray(d.videos))?d.videos:[];
-  sc.reel=actionCues(sc,urls);
+  sc.reel=actionCues(sc,urls,d.starts);
+  const nver=(d.verified||[]).filter(v=>v===true).length;
   chatMsg('sys',sc.reel.length
-    ?`&#9635; ${sc.reel.length}/${acts.length} action clips — the film cuts `
-     +`with the actions`+(quiet?' (prefetched)':'')
+    ?`&#9635; ${sc.reel.length}/${acts.length} action clips`
+     +(nver?`, ${nver} visually checked against the words`:'')
+     +` — the film cuts with the actions`+(quiet?' (prefetched)':'')
     :'no action footage'+(d.why?' ('+d.why+')':''));
 }
 async function reelUpgrade(sc,acts){
@@ -3567,9 +3583,11 @@ function ensureFootage(sc,quiet){
                              seconds:Math.max(2,Math.round(sc.seconds||8))})});
       const d=await r.json();
       const url=(r.ok&&Array.isArray(d.videos))?d.videos[0]:null;
-      if(url){sc.videoUrl=url;
+      if(url){sc.videoUrl=url; sc.videoStart=(d.starts||[])[0]||0;
         chatMsg('sys','&#9635; real footage under this chapter — &ldquo;'
-                     +term+'&rdquo;'+(quiet?' (prefetched)':''));}
+                     +term+'&rdquo;'
+                     +((d.verified||[])[0]===true?' (visually checked)':'')
+                     +(quiet?' (prefetched)':''));}
       else if(!quiet&&(d.why||d.disabled))
         chatMsg('sys','no stock footage ('+(d.why||'unavailable')+')');
     }catch(e){}
@@ -4552,7 +4570,15 @@ function scorePose(live,step){
 }
 
 /* --- starting and stopping ---------------------------------------------- */
+let LM_CACHE=null;      /* the loaded trackers live for the whole session */
 async function loadLandmarker(){
+  /* Loaded ONCE and kept: the wasm + models are ~15 MB, and re-creating
+     them for every chapter's camera check made each check open on ten
+     blank seconds — long enough to read as "the webcam never shows".
+     detectForVideo only needs timestamps to keep increasing, and both
+     callers feed it performance.now(), so one pair serves every check
+     and every coaching session from here on. */
+  if(LM_CACHE)return LM_CACHE;
   const vision=await import(MP_BASE+"/vision_bundle.mjs");
   const files=await vision.FilesetResolver.forVisionTasks(MP_BASE+"/wasm");
   const pose=d=>vision.PoseLandmarker.createFromOptions(files,{
@@ -4567,7 +4593,8 @@ async function loadLandmarker(){
     minTrackingConfidence:0.5});
   /* a machine with no usable WebGL still coaches, just slower */
   const both=async d=>[await pose(d),await hand(d)];
-  try{return await both("GPU");}catch(e){return await both("CPU");}
+  try{LM_CACHE=await both("GPU");}catch(e){LM_CACHE=await both("CPU");}
+  return LM_CACHE;
 }
 async function coachStart(){
   if(COACH.on||COACH.starting)return;
@@ -4642,8 +4669,7 @@ async function coachStart(){
 }
 function coachRelease(){
   if(COACH.stream)COACH.stream.getTracks().forEach(t=>t.stop());
-  if(COACH.landmarker){try{COACH.landmarker.close();}catch(_){}}
-  if(COACH.hander){try{COACH.hander.close();}catch(_){}}
+  /* the trackers are the session-wide LM_CACHE pair — released, not closed */
   if(COACH.video){COACH.video.srcObject=null;}
   COACH.stream=null; COACH.landmarker=null; COACH.hander=null;
   COACH.video=null; COACH.on=false; COACH.handLm=null;
@@ -5387,6 +5413,11 @@ async function verifyCamera(){
   const v=document.createElement('video');
   v.autoplay=true;v.muted=true;v.playsInline=true;v.srcObject=VERIFY.cam;
   await v.play(); VERIFY.video=v;
+  /* the slow part is NOT the camera — say so, or a first-time student
+     stares at "asking for your camera" while 15 MB of tracker downloads
+     and concludes the webcam never shows */
+  if(!LM_CACHE){$('status').textContent=
+    "Verify: loading the pose tracker (first time only, ~15 MB)";}
   const pair=await loadLandmarker();
   VERIFY.pose=pair[0]; VERIFY.hander=pair[1];
   $('status').textContent="";$('status').className='status';
@@ -5395,8 +5426,7 @@ function verifyRelease(){
   if(VERIFY._filmEls){VERIFY._filmEls.forEach(v=>{v.pause();v.src="";});
     VERIFY._filmEls.clear();}
   if(VERIFY.cam)VERIFY.cam.getTracks().forEach(t=>t.stop());
-  if(VERIFY.pose){try{VERIFY.pose.close();}catch(_){}}
-  if(VERIFY.hander){try{VERIFY.hander.close();}catch(_){}}
+  /* the trackers are the session-wide LM_CACHE pair — released, not closed */
   VERIFY.cam=VERIFY.video=VERIFY.pose=VERIFY.hander=null;
   VERIFY.active=false;
 }
@@ -5517,10 +5547,36 @@ async function verifyChapter(sc){
     }
     return false;
   }catch(e){
-    chatMsg('sys','&#9888; camera verify skipped — '+(e&&e.message||e));
     VERIFY.active=false; VERIFY.done=null;
     /* a denied camera left "asking for your camera" on screen forever */
     $('status').textContent="";$('status').className='status';
+    const name=(e&&e.name)||'';
+    const why=/NotAllowed|Security/.test(name)
+        ?'camera access is blocked — click the camera icon in the address '
+         +'bar, allow it, and the next chapter checks again'
+      :/NotFound|NotReadable|Overconstrained/.test(name)
+        ?'no usable camera was found — plug one in or close the app that '
+         +'is holding it, and the next chapter checks again'
+      :VERIFY.video
+        ?'the pose tracker could not load (network problem reaching the '
+         +'CDN?) — it retries on the next chapter'
+      :String(e&&e.message||e);
+    if(String(e&&e.message)==='lesson stopped'||lessonAbort){
+      chatMsg('sys','&#9888; camera verify skipped — lesson stopped');
+    }else if(VERIFY.strict){
+      /* STRICT means strict: a check that cannot even open the camera
+         must not quietly wave the lesson through. The lesson PAUSES with
+         the reason on screen — fix it and press Resume to re-check on
+         the next chapter, or turn Verify off to opt out deliberately. */
+      chatMsg('sys','&#9888; the camera check could not run — '+why);
+      chatMsg('sys','&#9208; lesson paused: coach-verify needs the camera. '
+        +'Fix it and press Resume, or click the "Coach-verify" button to '
+        +'turn verification off.');
+      captionText='Camera check needed — '+why; captionQA=false;
+      pauseLesson();
+    }else{
+      chatMsg('sys','&#9888; camera verify skipped — '+why);
+    }
     return false;      /* a broken camera is not a debt to retry forever */
   }finally{VERIFY.busy=false; lnnSave();}
 }

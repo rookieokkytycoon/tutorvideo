@@ -599,15 +599,21 @@ def stock_gen():
     """Real footage per step, from a stock library instead of a diffusion model.
 
     {"terms": ["seat the chain on the teeth", ...], "seconds": 5}
-    -> {"videos": [url|null, ...], "errors": [...], "source": "pexels"}
+    -> {"videos": [url|null, ...], "starts": [sec, ...],
+        "verified": [true|false|null, ...], "errors": [...],
+        "source": "pexels"}
 
     Deliberately the SAME response shape as /api/videos, so a world chapter's
     step_videos machinery does not care which provider filled the screen — a
     failed term comes back null, that step's screen goes quiet, and the lesson
     carries on, exactly as it does with diffusion.
 
-    One search per step, first unused result wins: the clips stay in step
-    order and two steps never show the same footage.
+    One search per step, and when a key is configured the candidates are
+    PERCEIVED before one is picked: a vision model checks that the clip
+    actually shows the term (verified true/false; null = not judged), and
+    "starts" says where in the clip it shows best so the board can cut in
+    there. Two steps never show the same footage. Pass {"verify": false}
+    to skip the judging and trust the search ranking.
     """
     mods, why = _mpt()
     if not mods:
@@ -642,24 +648,91 @@ def stock_gen():
 
     # the board is a wide surface: portrait stock would letterbox badly
     aspect = schema.VideoAspect.landscape
-    urls, errs, used = [], [], set()
-    for term in terms:
+    # The search ranking is a hint, never the verdict: the same
+    # Retrieve-Perceive-Review pass the composed reel runs (see _reel_run)
+    # now guards the LIVE consumers too — the footage layer, the live cut
+    # and a room's step reel all narrate over these clips, so a first hit
+    # that shows the wrong thing is film contradicting the words. A vision
+    # model looks at a few frames of each candidate and the best clip that
+    # actually shows the term wins, along with WHERE in the clip it shows
+    # best, so the board can cut in at that moment instead of t=0.
+    judge = bool(API_KEY) and body.get("verify") is not False
+    video_mod = mods["video"]
+    used, lock = set(), threading.Lock()
+
+    def _claim(url):
+        with lock:
+            if not url or url in used:
+                return False
+            used.add(url)
+            return True
+
+    def _release(url):
+        with lock:
+            used.discard(url)
+
+    def _pick(term):
+        """-> {"path": local|None, "start": s, "verified": bool|None,
+               "err": str|None} — never raises."""
         try:
             found = search(term, least, aspect) or []
         except Exception as e:
-            urls.append(None); errs.append(f"{term}: {e}"); continue
-        pick = next((m for m in found if m.url and m.url not in used), None)
-        if pick is None:
-            urls.append(None); errs.append(f"{term}: nothing found"); continue
-        used.add(pick.url)
-        try:
-            local = material.save_video(pick.url, save_dir=_tutor_dir())
-        except Exception as e:
-            urls.append(None); errs.append(f"{term}: {e}"); continue
-        ok = bool(local) and os.path.isfile(local) and os.path.getsize(local) > 0
-        urls.append(_tutor_url(local) if ok else None)
-        errs.append(None if ok else f"{term}: download failed")
-    return jsonify({"videos": urls, "errors": errs, "source": source})
+            return {"path": None, "start": 0.0, "verified": None,
+                    "err": f"{term}: {e}"}
+        best = None                  # (verdict, url, local) highest score
+        fallback = None              # (url, local) first that downloaded
+        claimed, seen = [], 0
+        for m in found:
+            if not _claim(m.url):
+                continue
+            try:
+                local = material.save_video(m.url, save_dir=_tutor_dir())
+            except Exception:
+                local = None
+            if not (local and os.path.isfile(local)
+                    and os.path.getsize(local) > 0):
+                _release(m.url); continue
+            claimed.append((m.url, local))
+            if fallback is None:
+                fallback = (m.url, local)
+            if not judge:
+                break                # trust the ranking, as before
+            verdict = _perceive_clip(video_mod, local, term)
+            seen += 1
+            if verdict and (best is None or verdict["score"] > best[0]["score"]):
+                best = (verdict, m.url, local)
+            if best and best[0]["score"] >= 8:
+                break                # visually confirmed; stop looking
+            if seen >= PERCEIVE_CANDIDATES:
+                break
+        if best and best[0]["score"] >= PERCEIVE_MIN_SCORE:
+            keep, start, verified, err = best[2], best[0]["start"], True, None
+        elif fallback:
+            # nothing confirmed: the search's first pick beats a dark
+            # screen, but the caller is told the match is on trust
+            keep, start, verified = fallback[1], 0.0, (False if judge and seen
+                                                       else None)
+            err = f"{term}: footage unverified" if verified is False else None
+        else:
+            keep, start, verified, err = None, 0.0, None, f"{term}: nothing found"
+        for url, local in claimed:   # the losers go back in the pool
+            if local != keep:
+                _release(url)
+        return {"path": keep, "start": round(float(start), 1),
+                "verified": verified, "err": err}
+
+    # one slow term must not serialise the whole reel behind it — judging
+    # adds a download and two vision calls per term, so the terms run
+    # side by side and the search costs what the slowest single term costs
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(4, len(terms))) as pool:
+        picks = list(pool.map(_pick, terms))
+    return jsonify({
+        "videos": [_tutor_url(p["path"]) if p["path"] else None for p in picks],
+        "starts": [p["start"] for p in picks],
+        "verified": [p["verified"] for p in picks],
+        "errors": [p["err"] for p in picks],
+        "source": source})
 
 
 # -------------------------------------------- the edited action reel (MPT)
